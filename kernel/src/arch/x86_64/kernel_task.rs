@@ -6,24 +6,12 @@
 
 use crate::scheduler::{Priority, Scheduler, SchedulerError, TaskId};
 
-use super::execution::execution_registry::{ExecutionRegistry, RegistryInsertError};
+use super::execution_registry::{ExecutionRegistry, RegistryInsertError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum KernelTaskError {
     Scheduler(SchedulerError),
     Registry(RegistryInsertError),
-}
-
-impl From<SchedulerError> for KernelTaskError {
-    fn from(error: SchedulerError) -> Self {
-        Self::Scheduler(error)
-    }
-}
-
-impl From<RegistryInsertError> for KernelTaskError {
-    fn from(error: RegistryInsertError) -> Self {
-        Self::Registry(error)
-    }
 }
 
 #[derive(Debug, Default)]
