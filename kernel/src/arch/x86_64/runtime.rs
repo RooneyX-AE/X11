@@ -144,8 +144,6 @@ mod tests {
     fn dispatch_requires_a_runnable_task() {
         let mut runtime = KernelRuntime::new();
         let result = unsafe { runtime.dispatch_once() };
-        assert_eq!(result, Err(RuntimeError::Task(super::KernelTaskError::Scheduler(
-            crate::scheduler::SchedulerError::TaskNotCreated,
-        ))));
+        assert_eq!(result, Err(RuntimeError::NoRunnableTask));
     }
 }
