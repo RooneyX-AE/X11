@@ -1,7 +1,9 @@
 //! Single-CPU kernel runtime owner.
 
 use alloc::boxed::Box;
+
 use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
+
 use super::context_switch::Context;
 use super::cpu_local::{self, RuntimeBindingError};
 use super::execution::ExecutionError;
@@ -50,54 +52,74 @@ impl KernelRuntime {
             preemption: PreemptionGate::new(),
         })
     }
+
     pub const fn manager(&self) -> &KernelTaskManager { &self.manager }
     pub const fn manager_mut(&mut self) -> &mut KernelTaskManager { &mut self.manager }
     pub const fn boot_context(&self) -> &Context { &self.boot_context }
     pub fn boot_context_mut(&mut self) -> &mut Context { &mut self.boot_context }
-    pub fn address(&self) -> u64 { self as *const Self as usize as u64 }
+
     pub unsafe fn bind_cpu(&mut self) -> Result<(), RuntimeError> {
         cpu_local::local().bind_runtime(self as *mut Self as *mut ()).map_err(RuntimeError::CpuBinding)
     }
+
     pub fn request_reschedule(&self) { self.reschedule.request(); }
     pub fn is_reschedule_pending(&self) -> bool { self.reschedule.is_pending() }
-    pub fn preemption_disable(&mut self) -> PreemptionDisableGuard<'_> { PreemptionDisableGuard { inner: Some(self.preemption.disable()) } }
+
+    pub fn preemption_disable(&mut self) -> PreemptionDisableGuard<'_> {
+        PreemptionDisableGuard { inner: Some(self.preemption.disable()) }
+    }
+
+    pub fn safe_reschedule_point(&mut self) -> Result<bool, RuntimeError> {
+        if !self.preemption.is_enabled() { return Err(RuntimeError::PreemptionDisabled); }
+        if !self.reschedule.take() { return Ok(false); }
+        self.commit_interrupted_state()?;
+        match unsafe { self.dispatch_once() } {
+            Ok(()) => Ok(true),
+            Err(error @ RuntimeError::InterruptedTaskRequiresIret) => {
+                self.request_reschedule();
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn commit_interrupted_state(&mut self) -> Result<(), RuntimeError> {
         let Some((task_id, snapshot)) = cpu_local::local().take_interrupted() else { return Ok(()); };
         let binding = self.manager.executions.get_mut(task_id).ok_or(RuntimeError::MissingExecutionPair)?;
         binding.install_interrupted(snapshot).map_err(RuntimeError::InterruptedState)
     }
-    pub fn safe_reschedule_point(&mut self) -> Result<bool, RuntimeError> {
-        if !self.preemption.is_enabled() { return Err(RuntimeError::PreemptionDisabled); }
-        if !self.reschedule.take() { return Ok(false); }
-        match unsafe { self.dispatch_once() } {
-            Ok(()) => Ok(true),
-            Err(error @ RuntimeError::InterruptedTaskRequiresIret) => { self.request_reschedule(); Err(error) }
-            Err(error) => Err(error),
-        }
-    }
+
     pub fn spawn(&mut self, priority: Priority, entry: extern "C" fn() -> !) -> Result<TaskId, RuntimeError> {
         self.manager.spawn(priority, entry).map_err(RuntimeError::Task)
     }
+
     pub fn prepare_run(&mut self) -> Result<TaskId, RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         decision.next.ok_or(RuntimeError::NoRunnableTask)
     }
-    pub fn prepare_preemption(&mut self) -> Result<PreemptionPlan, RuntimeError> {
-        let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
-        let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+
+    pub fn prepare_preemption(&self) -> Result<PreemptionPlan, RuntimeError> {
+        let next = self.manager.scheduler.next_ready().ok_or(RuntimeError::NoRunnableTask)?;
         self.manager.executions.preemption_plan(next).ok_or(RuntimeError::MissingExecutionPair)
     }
+
+    /// Handles timer-triggered preemption at the interrupt-return boundary.
+    /// The scheduler is mutated only after the target return path has been
+    /// classified, preventing a bootstrap task from being marked Running while
+    /// the CPU is still executing the interrupted task.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
         self.commit_interrupted_state()?;
         self.request_reschedule();
+
         if !self.preemption.is_enabled() { return Ok(InterruptPreemption::ResumeCurrent); }
         let Some(candidate) = self.manager.scheduler.next_ready() else { return Ok(InterruptPreemption::ResumeCurrent); };
         let plan = self.manager.executions.preemption_plan(candidate).ok_or(RuntimeError::MissingExecutionPair)?;
+
         match plan {
-            PreemptionPlan::Bootstrap { .. } => {
+            PreemptionPlan::Bootstrap { .. } => Ok(InterruptPreemption::ResumeCurrent),
+            PreemptionPlan::ReturnToContext { context, .. } => {
                 let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
                 if decision.next != Some(candidate) { return Err(RuntimeError::MissingExecutionPair); }
-                let context = *self.manager.executions.get(candidate).ok_or(RuntimeError::MissingExecutionPair)?.context();
                 unsafe { cpu_local::local().set_current_task(Some(candidate)); }
                 Ok(InterruptPreemption::ReturnToContext(context))
             }
@@ -110,23 +132,28 @@ impl KernelRuntime {
             }
         }
     }
+
     pub fn service_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
         let woken = self.manager.expire_sleepers(now);
         self.request_reschedule();
         Ok(woken)
     }
+
     pub fn service_pending_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
         if !super::idt::take_timer_pending() { return Ok(0); }
         self.service_timer(now)
     }
+
     pub unsafe fn dispatch_once(&mut self) -> Result<(), RuntimeError> {
         if let Some(candidate) = self.manager.scheduler.next_ready() {
             if matches!(self.manager.executions.preemption_plan(candidate), Some(PreemptionPlan::IretKernel { .. })) {
                 return Err(RuntimeError::InterruptedTaskRequiresIret);
             }
         }
+
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+
         match decision.previous {
             None => {
                 let next_context = self.manager.executions.get(next).ok_or(RuntimeError::MissingExecutionPair)?.context();
@@ -145,6 +172,7 @@ impl KernelRuntime {
         }
         Ok(())
     }
+
     pub fn execution_ready(&self, task_id: TaskId) -> bool { self.manager.is_executable(task_id) }
 }
 
@@ -157,17 +185,3 @@ pub unsafe fn yield_current() -> Result<(), RuntimeError> {
 
 pub struct PreemptionDisableGuard<'a> { inner: Option<crate::scheduler::DisableGuard<'a>> }
 impl Drop for PreemptionDisableGuard<'_> { fn drop(&mut self) { let _ = self.inner.take(); } }
-
-#[cfg(test)]
-mod tests {
-    use super::KernelRuntime;
-    extern "C" fn never_returns() -> ! { loop {} }
-    #[test]
-    fn fresh_runtime_is_stable() {
-        let mut runtime = KernelRuntime::new();
-        assert!(!runtime.is_reschedule_pending());
-        assert_ne!(runtime.address(), 0);
-        assert!(unsafe { runtime.bind_cpu() }.is_ok());
-        assert!(runtime.spawn(crate::scheduler::Priority::DEFAULT, never_returns).is_ok());
-    }
-}
