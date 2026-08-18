@@ -19,7 +19,6 @@ use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
-use memory::FrameAllocator;
 use timer::TimerDevice;
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
@@ -121,7 +120,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 arch::x86_64::apic::ApicMode::X2Apic => "x2APIC\r\n",
                             });
                             // SAFETY: direct map is available for xAPIC mode.
-                            apic_ready = unsafe { arch::x86_64::local_apic::initialize(mode, mapping).is_ok() };
+                            apic_ready = unsafe { arch::x86_64::local_apic::initialize(mode, Some(mapping)).is_ok() };
                             serial::write_str(if apic_ready { "X11-OS: Local APIC EOI initialized\r\n" } else { "X11-OS: Local APIC EOI initialization failed\r\n" });
                         }
                     }
