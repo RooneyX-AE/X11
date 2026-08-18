@@ -6,7 +6,7 @@
 
 use x11_os_abi::{Syscall, UserSlice};
 
-use crate::memory::{validate_slice, UserRangeError};
+use crate::memory::{validate_readable_range, validate_slice, PageTableMapper, UserRangeError, UserReadError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallRequest {
@@ -45,6 +45,7 @@ pub enum SyscallError {
     NotImplemented,
     InvalidArguments,
     InvalidUserRange(UserRangeError),
+    InvalidUserMemory(UserReadError),
 }
 
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -58,16 +59,42 @@ pub fn dispatch(request: SyscallRequest) -> SyscallResult {
 
 fn sys_write(slice: UserSlice) -> SyscallResult {
     validate_slice(slice).map_err(SyscallError::InvalidUserRange)?;
-    // The range is validated, but the active address space is not yet able to
-    // prove that every page is mapped and readable. Do not dereference it here.
+    // The active address-space mapper is not attached to the runtime yet.
+    // Keep the syscall non-executing until page residency and permissions are
+    // available instead of dereferencing an unproven user pointer.
+    Err(SyscallError::NotImplemented)
+}
+
+/// Validates the complete memory contract required before `Write` can copy
+/// bytes from userspace. Actual copying is deliberately a later operation.
+pub fn sys_write_checked<M: PageTableMapper>(mapper: &M, slice: UserSlice) -> SyscallResult {
+    validate_readable_range(mapper, slice).map_err(SyscallError::InvalidUserMemory)?;
     Err(SyscallError::NotImplemented)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, SyscallError, SyscallRequest};
-    use crate::memory::UserRangeError;
+    use super::{dispatch, sys_write_checked, SyscallError, SyscallRequest};
+    use crate::memory::{KERNEL_SPACE_START, Page4K, PageAccess, PageTableMapper, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
     use x11_os_abi::{Syscall, UserSlice};
+
+    struct Flush;
+    impl crate::memory::MappingFlush for Flush {
+        fn flush(self) {}
+    }
+
+    struct FakeMapper {
+        access: PageAccess,
+    }
+
+    impl PageTableMapper for FakeMapper {
+        type Flush = Flush;
+        fn map_page(&mut self, _: Page4K, _: u64) -> Result<Self::Flush, crate::memory::MappingError> { unreachable!() }
+        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), crate::memory::MappingError> { unreachable!() }
+        fn translate(&self, _: u64) -> Option<u64> { None }
+        fn page_access(&self, _: u64) -> PageAccess { self.access }
+        fn address_space(&self) -> VirtRange { VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap() }
+    }
 
     #[test]
     fn decodes_shared_syscall_numbers() {
@@ -99,7 +126,7 @@ mod tests {
 
     #[test]
     fn write_rejects_kernel_address_before_dereference() {
-        let request = SyscallRequest::write(UserSlice { ptr: crate::memory::KERNEL_SPACE_START, len: 1 });
+        let request = SyscallRequest::write(UserSlice { ptr: KERNEL_SPACE_START, len: 1 });
         assert_eq!(
             dispatch(request),
             Err(SyscallError::InvalidUserRange(UserRangeError::OutsideUserSpace))
@@ -107,8 +134,20 @@ mod tests {
     }
 
     #[test]
-    fn known_write_in_user_range_is_not_implemented_until_page_validation_exists() {
-        let request = SyscallRequest::write(UserSlice { ptr: crate::memory::USER_SPACE_START, len: 1 });
-        assert_eq!(dispatch(request), Err(SyscallError::NotImplemented));
+    fn checked_write_rejects_unmapped_page() {
+        let mapper = FakeMapper { access: PageAccess::unmapped() };
+        assert_eq!(
+            sys_write_checked(&mapper, UserSlice { ptr: USER_SPACE_START, len: 1 }),
+            Err(SyscallError::InvalidUserMemory(UserReadError::Unmapped))
+        );
+    }
+
+    #[test]
+    fn checked_write_accepts_readable_user_pages_but_stays_unimplemented() {
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        assert_eq!(
+            sys_write_checked(&mapper, UserSlice { ptr: USER_SPACE_START + 1, len: 8 }),
+            Err(SyscallError::NotImplemented)
+        );
     }
 }
