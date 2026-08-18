@@ -8,6 +8,7 @@ pub mod cpu_local;
 pub mod dispatch;
 pub mod execution;
 pub mod execution_registry;
+pub mod image_writer;
 pub mod interrupt_entry;
 pub mod interrupt_frame;
 pub mod interrupted_state;
