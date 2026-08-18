@@ -10,7 +10,7 @@ use crate::scheduler::{Priority, TaskId};
 
 use super::context_switch::Context;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
-use super::yield::{self, YieldError};
+use super::yield_switch::{self, YieldError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -99,7 +99,7 @@ impl KernelRuntime {
                 // runtime and `next_context` belongs to a validated execution
                 // binding whose stack lifetime is owned by the registry.
                 unsafe {
-                    yield::activate_first(
+                    yield_switch::activate_first(
                         &mut self.boot_context as *mut Context,
                         next_context as *const Context,
                     )?;
@@ -115,7 +115,7 @@ impl KernelRuntime {
                 // SAFETY: `context_pair_mut` guarantees distinct execution
                 // objects and the registry owns their backing stacks.
                 unsafe {
-                    yield::switch(current as *mut Context, next_context as *const Context)?;
+                    yield_switch::switch(current as *mut Context, next_context as *const Context)?;
                 }
             }
         }
