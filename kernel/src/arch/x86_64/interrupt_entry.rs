@@ -1,8 +1,9 @@
 //! x86_64 interrupt-entry register frame.
 //!
-//! This module is intentionally not installed into the IDT yet. It freezes the
-//! assembly/Rust ABI first so preemption can be reviewed independently from
-//! interrupt routing.
+//! The timer entry stub is deliberately separate from the Rust
+//! `extern "x86-interrupt"` path. It owns the exact assembly/Rust ABI, saves all
+//! general-purpose registers, exposes the CPU-owned return frame, and returns
+//! with `iretq` without changing scheduler state.
 
 /// General-purpose registers saved by the timer entry stub.
 #[repr(C)]
@@ -26,10 +27,6 @@ pub struct SavedRegisters {
 }
 
 /// CPU-owned interrupt return frame.
-///
-/// Same-CPL kernel interrupts contain RIP/CS/RFLAGS. A privilege transition
-/// additionally contains the interrupted RSP/SS pair. The wrapper keeps the
-/// raw pointer so Rust never reads absent words from a same-CPL frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterruptReturnFrame {
     raw: *mut u64,
@@ -39,32 +36,22 @@ unsafe impl Send for InterruptReturnFrame {}
 unsafe impl Sync for InterruptReturnFrame {}
 
 impl InterruptReturnFrame {
-    /// # Safety
-    /// `raw` must point to the first 8-byte word of a CPU interrupt frame.
     pub const unsafe fn from_raw(raw: *mut u64) -> Self {
         Self { raw }
     }
 
-    /// # Safety
-    /// The pointer must reference a valid CPU-owned return frame.
     pub unsafe fn rip(self) -> u64 {
         unsafe { *self.raw.add(0) }
     }
 
-    /// # Safety
-    /// The pointer must reference a valid CPU-owned return frame.
     pub unsafe fn cs(self) -> u64 {
         unsafe { *self.raw.add(1) }
     }
 
-    /// # Safety
-    /// The pointer must reference a valid CPU-owned return frame.
     pub unsafe fn rflags(self) -> u64 {
         unsafe { *self.raw.add(2) }
     }
 
-    /// # Safety
-    /// Only valid when the saved CS indicates a privilege-level change.
     pub unsafe fn rsp(self) -> Option<u64> {
         if unsafe { self.cs() } & 3 == 0 {
             return None;
@@ -72,8 +59,6 @@ impl InterruptReturnFrame {
         Some(unsafe { *self.raw.add(3) })
     }
 
-    /// # Safety
-    /// Only valid when the saved CS indicates a privilege-level change.
     pub unsafe fn ss(self) -> Option<u64> {
         if unsafe { self.cs() } & 3 == 0 {
             return None;
@@ -93,21 +78,29 @@ const CROSS_CPL_FRAME_BYTES: usize = 5 * core::mem::size_of::<u64>();
 const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
-/// Rust-side hook used by the future timer entry path.
+/// Rust-side timer entry hook.
 ///
-/// Keeping it as a no-op for now lets the assembly ABI compile and be tested
-/// without enabling actual preemption before scheduler integration is ready.
+/// The current implementation only acknowledges the timer and records the
+/// deferred event. Scheduler policy is intentionally not executed here.
 #[inline(never)]
 extern "C" fn timer_entry_rust(
     _registers: *mut SavedRegisters,
-    _return_frame: *mut u64,
+    return_frame: *mut u64,
 ) {
+    let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
+    // The current raw timer path is a kernel-only path. If this invariant ever
+    // changes, the entry ABI must explicitly support the user-return frame.
+    if unsafe { frame.is_kernel_return() } {
+        crate::arch::x86_64::idt::record_timer_interrupt();
+    }
 }
 
-/// Naked timer-entry prototype. It saves all general-purpose registers,
-/// invokes the Rust hook, restores the registers, and returns with IRETQ.
+/// Raw timer-entry ABI.
 ///
-/// This symbol is not installed in the IDT yet.
+/// # Safety
+/// The symbol is valid only as an x86_64 IDT interrupt entry. The caller must
+/// install it with `Entry::set_handler_addr()` only after verifying this exact
+/// ABI.
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_entry() {
     core::arch::naked_asm!(
