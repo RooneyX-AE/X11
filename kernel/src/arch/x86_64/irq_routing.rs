@@ -85,7 +85,7 @@ pub fn io_apic_index_for_gsi(topology: &ApicTopology, gsi: u32) -> Option<usize>
     topology.io_apics[..topology.io_apic_count]
         .iter()
         .enumerate()
-        .flatten()
+        .filter_map(|(index, entry)| entry.map(|ioapic| (index, ioapic)))
         .filter(|(_, ioapic)| ioapic.global_system_interrupt_base <= gsi)
         .max_by_key(|(_, ioapic)| ioapic.global_system_interrupt_base)
         .map(|(index, _)| index)
