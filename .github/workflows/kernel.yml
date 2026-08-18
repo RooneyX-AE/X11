@@ -50,10 +50,9 @@ jobs:
           grep -q 'X11-OS: legacy 8259 masked' qemu.log
           grep -q 'X11-OS: local APIC mode =' qemu.log
           grep -q 'X11-OS: LAPIC timer calibrated Hz =' qemu.log
-          grep -q 'X11-OS: LAPIC periodic timer enabled at 100 Hz' qemu.log
-          grep -q 'X11-OS: LAPIC timer interrupt verified, ticks =' qemu.log
           grep -q 'X11-OS: page mapping verified' qemu.log
           grep -q 'X11-OS: page unmapping verified' qemu.log
           grep -q 'X11-OS: heap initialized' qemu.log
           grep -q 'X11-OS: heap allocation verified' qemu.log
           grep -q 'X11-OS: heap deallocation verified' qemu.log
+          grep -q 'X11-OS: scheduler lifecycle verified' qemu.log
