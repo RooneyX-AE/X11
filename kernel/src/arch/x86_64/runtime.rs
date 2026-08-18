@@ -10,6 +10,7 @@ use alloc::boxed::Box;
 use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
 
 use super::context_switch::Context;
+use super::cpu_local;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::yield_switch::{self, YieldError};
 
@@ -84,19 +85,51 @@ impl KernelRuntime {
         self.service_timer(now)
     }
 
+    /// Performs one scheduler dispatch and synchronizes the CPU-local current
+    /// task identity on both sides of the context-switch continuation.
+    ///
+    /// # Safety
+    /// The caller must exclude interrupt/preemption races around the switch
+    /// boundary and the task execution bindings must have valid contexts.
     pub unsafe fn dispatch_once(&mut self) -> Result<(), RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+
         match decision.previous {
             None => {
-                let next_context = self.manager.executions.get(next).ok_or(RuntimeError::MissingExecutionPair)?.context();
-                unsafe { yield_switch::activate_first(&mut self.boot_context as *mut Context, next_context as *const Context)?; }
+                let next_context = self
+                    .manager
+                    .executions
+                    .get(next)
+                    .ok_or(RuntimeError::MissingExecutionPair)?
+                    .context();
+
+                unsafe { cpu_local::local().set_current_task(Some(next)); }
+                let result = unsafe {
+                    yield_switch::activate_first(
+                        &mut self.boot_context as *mut Context,
+                        next_context as *const Context,
+                    )
+                };
+                unsafe { cpu_local::local().set_current_task(None); }
+                result.map_err(RuntimeError::Yield)?;
             }
             Some(previous) => {
-                let (current, next_context) = self.manager.executions.context_pair_mut(previous, next).ok_or(RuntimeError::MissingExecutionPair)?;
-                unsafe { yield_switch::switch(current as *mut Context, next_context as *const Context)?; }
+                let (current, next_context) = self
+                    .manager
+                    .executions
+                    .context_pair_mut(previous, next)
+                    .ok_or(RuntimeError::MissingExecutionPair)?;
+
+                unsafe { cpu_local::local().set_current_task(Some(next)); }
+                let result = unsafe {
+                    yield_switch::switch(current as *mut Context, next_context as *const Context)
+                };
+                unsafe { cpu_local::local().set_current_task(Some(previous)); }
+                result.map_err(RuntimeError::Yield)?;
             }
         }
+
         Ok(())
     }
 
@@ -114,6 +147,7 @@ impl Drop for PreemptionDisableGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::{KernelRuntime, RuntimeError};
+    use crate::arch::x86_64::cpu_local;
     use crate::scheduler::{Priority, TaskState};
 
     extern "C" fn never_returns() -> ! { loop {} }
@@ -140,5 +174,11 @@ mod tests {
         assert_eq!(runtime.service_timer(100).unwrap(), 0);
         assert!(runtime.is_reschedule_pending());
         assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Ready));
+    }
+
+    #[test]
+    fn cpu_local_identity_is_clear_before_dispatch() {
+        unsafe { cpu_local::local().set_current_task(None); }
+        assert_eq!(cpu_local::local().current_task(), None);
     }
 }
