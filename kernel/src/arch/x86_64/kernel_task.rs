@@ -112,7 +112,7 @@ impl KernelTaskManager {
 #[cfg(test)]
 mod tests {
     use super::KernelTaskManager;
-    use crate::scheduler::{Priority, TaskState};
+    use crate::scheduler::{DispatchDecision, Priority, TaskState};
 
     extern "C" fn never_returns() -> ! {
         loop {}
@@ -139,7 +139,10 @@ mod tests {
 
     #[test]
     fn prepare_dispatch_does_not_change_state_without_a_ready_task() {
-        let manager = KernelTaskManager::new();
-        assert_eq!(manager.prepare_dispatch().unwrap(), DispatchDecision { previous: None, next: None });
+        let mut manager = KernelTaskManager::new();
+        assert_eq!(
+            manager.prepare_dispatch().unwrap(),
+            DispatchDecision { previous: None, next: None }
+        );
     }
 }
