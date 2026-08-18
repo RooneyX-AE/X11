@@ -1,6 +1,6 @@
 [workspace]
-resolver = "2"
-members = ["kernel"]
+resolver = "3"
+members = ["kernel", "boot"]
 
 [workspace.package]
 edition = "2024"
