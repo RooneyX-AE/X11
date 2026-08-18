@@ -1,0 +1,120 @@
+//! Single-CPU architecture-local handoff state.
+//!
+//! This is deliberately a small bootstrap abstraction. It will become a
+//! per-CPU array when SMP is introduced, but the ownership contract remains:
+//! interrupt entry records state here, while normal kernel context consumes it.
+
+use core::cell::UnsafeCell;
+
+use crate::scheduler::TaskId;
+
+use super::interrupted_state::InterruptedState;
+use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+
+#[derive(Debug)]
+pub struct CpuLocalState {
+    current_task: UnsafeCell<Option<TaskId>>,
+    interrupted: UnsafeCell<Option<(TaskId, InterruptedState)>>,
+}
+
+unsafe impl Sync for CpuLocalState {}
+
+impl CpuLocalState {
+    pub const fn new() -> Self {
+        Self {
+            current_task: UnsafeCell::new(None),
+            interrupted: UnsafeCell::new(None),
+        }
+    }
+
+    /// Updates the task considered current on this CPU.
+    ///
+    /// # Safety
+    /// Callers must be on the owning CPU with preemption/interrupts excluded
+    /// from concurrent mutation of this state.
+    pub unsafe fn set_current_task(&self, task: Option<TaskId>) {
+        unsafe { *self.current_task.get() = task };
+    }
+
+    pub fn current_task(&self) -> Option<TaskId> {
+        unsafe { *self.current_task.get() }
+    }
+
+    /// Captures the interrupted state for the current CPU task.
+    ///
+    /// # Safety
+    /// `registers` and `return_frame` must point to the live CPU interrupt
+    /// frame owned by the current interrupt entry. Only the owning CPU may
+    /// call this method, and at most one snapshot may be pending.
+    pub unsafe fn capture_interrupted(
+        &self,
+        registers: *const SavedRegisters,
+        return_frame: InterruptReturnFrame,
+    ) -> Result<TaskId, CaptureError> {
+        let task = self.current_task().ok_or(CaptureError::NoCurrentTask)?;
+        let slot = unsafe { &mut *self.interrupted.get() };
+        if slot.is_some() {
+            return Err(CaptureError::AlreadyPending);
+        }
+        let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
+        if !snapshot.is_valid() {
+            return Err(CaptureError::InvalidState);
+        }
+        *slot = Some((task, snapshot));
+        Ok(task)
+    }
+
+    /// Takes the pending interrupted snapshot for normal-kernel consumption.
+    pub fn take_interrupted(&self) -> Option<(TaskId, InterruptedState)> {
+        unsafe { (*self.interrupted.get()).take() }
+    }
+
+    pub fn has_interrupted(&self) -> bool {
+        unsafe { (*self.interrupted.get()).is_some() }
+    }
+}
+
+static CPU_LOCAL: CpuLocalState = CpuLocalState::new();
+
+pub fn local() -> &'static CpuLocalState {
+    &CPU_LOCAL
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureError {
+    NoCurrentTask,
+    AlreadyPending,
+    InvalidState,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{local, CaptureError};
+    use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+    use crate::scheduler::TaskId;
+
+    #[test]
+    fn cpu_local_current_task_round_trips() {
+        let cpu = local();
+        unsafe { cpu.set_current_task(Some(TaskId::new(7, 3))) };
+        assert_eq!(cpu.current_task(), Some(TaskId::new(7, 3)));
+        unsafe { cpu.set_current_task(None) };
+        assert_eq!(cpu.current_task(), None);
+    }
+
+    #[test]
+    fn capture_requires_current_task() {
+        let cpu = local();
+        unsafe { cpu.set_current_task(None) };
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000;
+        raw[1] = 0x10;
+        raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        assert_eq!(
+            unsafe { cpu.capture_interrupted(&registers, frame) },
+            Err(CaptureError::NoCurrentTask)
+        );
+    }
+}
