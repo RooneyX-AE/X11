@@ -56,6 +56,36 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
         Self { inner, frame_allocator: FrameAllocatorAdapter { inner: frame_allocator }, address_space }
     }
 
+    /// Creates a mapper over an explicitly supplied level-4 root instead of
+    /// the currently active CR3 root. This is required while constructing a
+    /// process address space before it becomes the active address space.
+    ///
+    /// # Safety
+    /// `physical_memory_offset` must be a valid direct map for `root`, the root
+    /// frame must be exclusively owned by this address space, and no concurrent
+    /// page-table mutation may race this mapper.
+    pub unsafe fn new_for_root(
+        physical_memory_offset: u64,
+        root: PhysFrame<Size4KiB>,
+        frame_allocator: &'allocator mut EarlyFrameAllocator<'regions>,
+        address_space: VirtRange,
+    ) -> Result<Self, MappingError> {
+        let root_virtual = root
+            .start_address()
+            .as_u64()
+            .checked_add(physical_memory_offset)
+            .ok_or(MappingError::BackendFailure)?;
+        let root_pointer = root_virtual as *mut PageTable;
+        let level_4_table = unsafe { &mut *root_pointer };
+        let inner = unsafe {
+            x86_64::structures::paging::OffsetPageTable::new(
+                level_4_table,
+                x86_64::VirtAddr::new(physical_memory_offset),
+            )
+        };
+        Ok(Self { inner, frame_allocator: FrameAllocatorAdapter { inner: frame_allocator }, address_space })
+    }
+
     fn mapped_flags(&self, virtual_address: u64) -> Option<PageTableFlags> {
         if !self.address_space.contains(virtual_address) { return None; }
         let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_address));
