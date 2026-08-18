@@ -85,7 +85,23 @@ impl KernelRuntime {
     }
 
     fn commit_interrupted_state(&mut self) -> Result<(), RuntimeError> {
-        let Some((task_id, snapshot)) = cpu_local::local().take_interrupted() else { return Ok(()); };
+        let Some(task_id) = cpu_local::local().current_task() else {
+            return if cpu_local::local().has_interrupted() {
+                Err(RuntimeError::MissingExecutionPair)
+            } else {
+                Ok(())
+            };
+        };
+
+        if self.manager.executions.get(task_id).is_none() {
+            return Err(RuntimeError::MissingExecutionPair);
+        }
+
+        let Some((captured_task, snapshot)) = cpu_local::local().take_interrupted() else {
+            return Ok(());
+        };
+        debug_assert_eq!(captured_task, task_id);
+
         let binding = self.manager.executions.get_mut(task_id).ok_or(RuntimeError::MissingExecutionPair)?;
         binding.install_interrupted(snapshot).map_err(RuntimeError::InterruptedState)
     }
