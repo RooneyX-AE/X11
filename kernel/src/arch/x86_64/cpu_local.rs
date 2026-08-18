@@ -14,6 +14,7 @@ use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 #[derive(Debug)]
 pub struct CpuLocalState {
     current_task: UnsafeCell<Option<TaskId>>,
+    runtime: UnsafeCell<Option<usize>>,
     interrupted: UnsafeCell<Option<(TaskId, InterruptedState)>>,
 }
 
@@ -23,6 +24,7 @@ impl CpuLocalState {
     pub const fn new() -> Self {
         Self {
             current_task: UnsafeCell::new(None),
+            runtime: UnsafeCell::new(None),
             interrupted: UnsafeCell::new(None),
         }
     }
@@ -33,6 +35,32 @@ impl CpuLocalState {
 
     pub fn current_task(&self) -> Option<TaskId> {
         unsafe { *self.current_task.get() }
+    }
+
+    /// Binds the single runtime instance owned by this CPU during bootstrap.
+    ///
+    /// # Safety
+    /// `runtime` must remain allocated at a stable address for the lifetime of
+    /// the CPU binding, and callers must serialize binding with interrupt and
+    /// preemption activity.
+    pub unsafe fn bind_runtime(&self, runtime: *mut ()) -> Result<(), RuntimeBindingError> {
+        let slot = unsafe { &mut *self.runtime.get() };
+        if slot.is_some() {
+            return Err(RuntimeBindingError::AlreadyBound);
+        }
+        if runtime.is_null() {
+            return Err(RuntimeBindingError::Null);
+        }
+        *slot = Some(runtime as usize);
+        Ok(())
+    }
+
+    pub fn runtime_ptr(&self) -> Option<*mut ()> {
+        unsafe { (*self.runtime.get()).map(|address| address as *mut ()) }
+    }
+
+    pub unsafe fn unbind_runtime(&self) {
+        unsafe { *self.runtime.get() = None };
     }
 
     /// Captures the interrupted state for the current CPU task.
@@ -77,6 +105,12 @@ pub fn local() -> &'static CpuLocalState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeBindingError {
+    Null,
+    AlreadyBound,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureError {
     NoCurrentTask,
     AlreadyPending,
@@ -85,7 +119,7 @@ pub enum CaptureError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureError, CpuLocalState};
+    use super::{CaptureError, CpuLocalState, RuntimeBindingError};
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::scheduler::TaskId;
 
@@ -96,6 +130,18 @@ mod tests {
         assert_eq!(cpu.current_task(), Some(TaskId::new(7, 3)));
         unsafe { cpu.set_current_task(None) };
         assert_eq!(cpu.current_task(), None);
+    }
+
+    #[test]
+    fn runtime_binding_is_stable_and_single_owner() {
+        let cpu = CpuLocalState::new();
+        let mut marker = 0u8;
+        let ptr = core::ptr::addr_of_mut!(marker).cast::<()>();
+        unsafe { cpu.bind_runtime(ptr).unwrap() };
+        assert_eq!(cpu.runtime_ptr(), Some(ptr));
+        assert_eq!(unsafe { cpu.bind_runtime(ptr) }, Err(RuntimeBindingError::AlreadyBound));
+        unsafe { cpu.unbind_runtime() };
+        assert_eq!(cpu.runtime_ptr(), None);
     }
 
     #[test]
