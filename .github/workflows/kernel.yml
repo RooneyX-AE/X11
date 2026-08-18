@@ -18,7 +18,7 @@ jobs:
           components: rust-src, llvm-tools-preview, rustfmt
           rustflags: ""
       - name: Format workspace
-        run: cargo fmt --all
+        run: cargo fmt --all -- --check
       - name: Check formatting changes
         run: git diff --check
       - name: Run host-side kernel tests
@@ -57,9 +57,11 @@ jobs:
       - name: Build UEFI image
         run: cargo build -p x11-os-boot
       - name: Install QEMU and UEFI firmware
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 ovmf
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
       - name: Boot kernel and verify timer preemption paths
         shell: bash
         run: |
@@ -78,25 +80,41 @@ jobs:
           qemu_status=${PIPESTATUS[0]}
           set -e
           test "$qemu_status" -eq 124
-          grep -q 'X11-OS: kernel entry reached' qemu.log
-          grep -q 'X11-OS: CPU foundation initialized' qemu.log
-          grep -q 'X11-OS: invariant TSC clocksource available' qemu.log
-          grep -q 'X11-OS: ACPI MADT discovered' qemu.log
-          grep -q 'X11-OS: legacy 8259 masked' qemu.log
-          grep -q 'X11-OS: local APIC mode =' qemu.log
-          grep -q 'X11-OS: Local APIC EOI initialized' qemu.log
-          grep -q 'X11-OS: LAPIC timer calibrated Hz =' qemu.log
-          grep -q 'X11-OS: LAPIC periodic timer enabled at 100 Hz' qemu.log
-          grep -q 'X11-OS: heap initialized' qemu.log
-          grep -q 'X11-OS: heap allocation verified' qemu.log
-          grep -q 'X11-OS: kernel runtime bound to CPU0' qemu.log
-          grep -q 'X11-OS: preemption proof tasks armed' qemu.log
-          grep -q 'X11-OS: interrupts remain disabled until task B starts' qemu.log
-          grep -q 'X11-OS: task A started' qemu.log
-          grep -q 'X11-OS: task B started' qemu.log
-          grep -q 'X11-OS: interrupts enabled in task B' qemu.log
-          grep -q 'X11-OS: task A resumed after timer preemption' qemu.log
-          grep -q 'X11-OS: task B resumed through kernel iretq' qemu.log
+          python3 - <<'PY'
+          from pathlib import Path
+
+          log = Path("qemu.log").read_text(errors="replace")
+          required = [
+              "X11-OS: kernel entry reached",
+              "X11-OS: CPU foundation initialized",
+              "X11-OS: invariant TSC clocksource available",
+              "X11-OS: ACPI MADT discovered",
+              "X11-OS: legacy 8259 masked",
+              "X11-OS: local APIC mode =",
+              "X11-OS: Local APIC EOI initialized",
+              "X11-OS: LAPIC timer calibrated Hz =",
+              "X11-OS: LAPIC periodic timer enabled at 100 Hz",
+              "X11-OS: heap initialized",
+              "X11-OS: heap allocation verified",
+              "X11-OS: kernel runtime bound to CPU0",
+              "X11-OS: preemption proof tasks armed",
+              "X11-OS: interrupts remain disabled until task B starts",
+              "X11-OS: task A started",
+              "X11-OS: task B started",
+              "X11-OS: interrupts enabled in task B",
+              "X11-OS: task A resumed after timer preemption",
+              "X11-OS: task B resumed through kernel iretq",
+          ]
+
+          position = -1
+          for marker in required:
+              next_position = log.find(marker, position + 1)
+              if next_position < 0:
+                  raise SystemExit(f"missing or out-of-order runtime marker: {marker}")
+              position = next_position
+
+          print("QEMU runtime marker order verified")
+          PY
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
