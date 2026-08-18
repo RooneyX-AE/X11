@@ -38,6 +38,14 @@ impl ReturnState {
     pub const fn ss(self) -> Option<u64> { self.ss }
 
     pub const fn is_kernel(self) -> bool { self.cs & 3 == 0 }
+
+    /// Returns the exact three words required for a same-CPL kernel `iretq`.
+    pub const fn kernel_iret_words(self) -> Option<[u64; 3]> {
+        if !self.is_kernel() || self.rip == 0 || self.rflags & 2 == 0 || self.resume_rsp == 0 {
+            return None;
+        }
+        Some([self.rip, self.cs, self.rflags])
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +97,7 @@ mod tests {
         assert_eq!(snapshot.return_state().rsp(), None);
         assert_eq!(snapshot.return_state().ss(), None);
         assert_eq!(snapshot.return_state().resume_rsp(), raw.as_mut_ptr() as u64 + 24);
+        assert_eq!(snapshot.return_state().kernel_iret_words(), Some([0x1000, 0x10, 0x202]));
     }
 
     #[test]
@@ -103,6 +112,7 @@ mod tests {
         };
         assert!(!state.is_kernel());
         assert_eq!(state.resume_rsp(), 0x8000);
+        assert!(state.kernel_iret_words().is_none());
         assert!(state.rsp().is_some() && state.ss().is_some());
     }
 }
