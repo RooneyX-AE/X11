@@ -1,10 +1,12 @@
 //! Architecture-independent timekeeping and timer contracts.
 //!
-//! Hardware timer implementations must report monotonic time and deliver
-//! periodic scheduling events through this narrow interface. The scheduler
-//! must not depend on APIC, HPET, or another hardware timer directly.
+//! A clocksource answers "what time is it?" while a timer device answers
+//! "when should the kernel receive the next periodic event?". Keeping those
+//! contracts separate lets TSC, HPET, and ACPI PM timer coexist with LAPIC or
+//! other interrupt-capable timer devices without coupling the scheduler to a
+//! specific hardware implementation.
 
-/// Kernel time unit: nanoseconds since the kernel timebase was initialized.
+/// Kernel time unit: nanoseconds since the selected clocksource was initialized.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MonotonicTime(u64);
 
@@ -26,7 +28,11 @@ pub struct TimerInterval {
 
 impl TimerInterval {
     pub const fn new(nanos: u64) -> Option<Self> {
-        if nanos == 0 { None } else { Some(Self { nanos }) }
+        if nanos == 0 {
+            None
+        } else {
+            Some(Self { nanos })
+        }
     }
 
     pub const fn as_nanos(self) -> u64 {
@@ -34,12 +40,19 @@ impl TimerInterval {
     }
 }
 
-/// Minimal interface expected from a kernel timer backend.
-pub trait Timer {
+/// Reads monotonic kernel time from a hardware-backed clocksource.
+pub trait Clocksource {
     type Error;
 
-    fn now(&self) -> MonotonicTime;
+    fn now(&self) -> Result<MonotonicTime, Self::Error>;
+}
+
+/// Programs periodic timer interrupts independently of the clocksource.
+pub trait TimerDevice {
+    type Error;
+
     fn set_periodic(&mut self, interval: TimerInterval) -> Result<(), Self::Error>;
+    fn disable(&mut self) -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]
