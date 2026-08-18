@@ -5,6 +5,7 @@ pub mod apic;
 pub mod ioapic;
 pub mod irq_routing;
 pub mod local_apic;
+pub mod tsc;
 mod gdt;
 mod idt;
 pub mod page_table;
