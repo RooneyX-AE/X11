@@ -50,6 +50,7 @@ pub unsafe extern "C" fn return_to_context(context: *const Context) -> ! {
         "mov r14, [rdi + 40]",
         "mov r15, [rdi + 48]",
         "sti",
+        "nop",
         "push qword ptr [rdi + 56]",
         "ret",
     );
