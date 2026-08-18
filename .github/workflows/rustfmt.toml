@@ -1,0 +1,2 @@
+# CI formatting is normalized before compilation. The repository's canonical style is
+# defined by rustfmt.toml at the workspace root.
