@@ -1,9 +1,8 @@
 //! x86_64 execution binding for the architecture-independent scheduler.
 //!
-//! This adapter owns the kernel stack, activation metadata, and voluntary
-//! context for one task. Interrupt/preemption state, CR3, FPU/SIMD state, and
-//! CPU-local ownership are deliberately outside this binding until their
-//! contracts are defined.
+//! This adapter owns the kernel stack, activation metadata, voluntary context,
+//! and an optional interrupted CPU snapshot. Interrupt frames are copied out of
+//! transient IRQ stack memory before the handler returns.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -12,6 +11,8 @@ use crate::scheduler::{ExecutionBinding, TaskId};
 
 use super::activation::ActivationRecord;
 use super::context_switch::{bootstrap_kernel_context, Context};
+use super::interrupted_state::InterruptedState;
+use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 
 pub const KERNEL_STACK_SIZE: usize = 32 * 1024;
 
@@ -19,6 +20,7 @@ pub const KERNEL_STACK_SIZE: usize = 32 * 1024;
 pub enum ExecutionError {
     StackAllocationFailed,
     InvalidStack,
+    InterruptedStateAlreadyPresent,
 }
 
 #[derive(Debug)]
@@ -27,6 +29,7 @@ pub struct X86ExecutionBinding {
     stack: Vec<u8>,
     activation: Box<ActivationRecord>,
     context: Context,
+    interrupted: Option<InterruptedState>,
 }
 
 impl X86ExecutionBinding {
@@ -52,32 +55,50 @@ impl X86ExecutionBinding {
             stack,
             activation,
             context,
+            interrupted: None,
         })
     }
 
-    pub const fn context(&self) -> &Context {
-        &self.context
+    pub const fn context(&self) -> &Context { &self.context }
+
+    pub fn context_mut(&mut self) -> &mut Context { &mut self.context }
+
+    pub const fn activation(&self) -> &ActivationRecord { &self.activation }
+
+    pub fn stack_size(&self) -> usize { self.stack.len() }
+
+    pub const fn interrupted(&self) -> Option<InterruptedState> { self.interrupted }
+
+    /// Copies the interrupted CPU state out of the transient IRQ stack.
+    ///
+    /// # Safety
+    /// `registers` and `return_frame` must point at the live state created by
+    /// the architecture interrupt entry stub for this exact task.
+    pub unsafe fn capture_interrupted(
+        &mut self,
+        registers: *const SavedRegisters,
+        return_frame: InterruptReturnFrame,
+    ) -> Result<(), ExecutionError> {
+        if self.interrupted.is_some() {
+            return Err(ExecutionError::InterruptedStateAlreadyPresent);
+        }
+        let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
+        if !snapshot.is_valid() {
+            return Err(ExecutionError::InvalidStack);
+        }
+        self.interrupted = Some(snapshot);
+        Ok(())
     }
 
-    pub fn context_mut(&mut self) -> &mut Context {
-        &mut self.context
-    }
-
-    pub const fn activation(&self) -> &ActivationRecord {
-        &self.activation
-    }
-
-    pub fn stack_size(&self) -> usize {
-        self.stack.len()
+    pub const fn take_interrupted(&mut self) -> Option<InterruptedState> {
+        self.interrupted.take()
     }
 }
 
 impl ExecutionBinding for X86ExecutionBinding {
     type Error = ExecutionError;
 
-    fn task_id(&self) -> TaskId {
-        self.task_id
-    }
+    fn task_id(&self) -> TaskId { self.task_id }
 
     fn is_bootstrapped(&self) -> bool {
         self.context.is_initialized()
@@ -90,6 +111,7 @@ impl ExecutionBinding for X86ExecutionBinding {
             || !self.context.is_initialized()
             || self.activation.task_id() != self.task_id
             || self.context.r12 != self.activation.pointer()
+            || self.interrupted.is_some_and(|state| !state.is_valid())
         {
             return Err(ExecutionError::InvalidStack);
         }
@@ -112,5 +134,6 @@ mod tests {
         assert_eq!(binding.context().r12, binding.activation().pointer());
         assert!(binding.is_bootstrapped());
         assert!(binding.validate().is_ok());
+        assert!(binding.interrupted().is_none());
     }
 }
