@@ -1,8 +1,8 @@
 //! CPU exception and early interrupt handling.
 //!
-//! Interrupt handlers stay intentionally small. The raw timer entry records a
-//! pending event and acknowledges the local APIC; scheduler policy is serviced
-//! outside interrupt context.
+//! Exception handlers stay intentionally small. The raw timer entry records a
+//! hardware event, acknowledges the local APIC, and may hand control directly
+//! to the scheduler return boundary when preemption is enabled.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -67,8 +67,9 @@ extern "x86-interrupt" fn double_fault_handler(_stack_frame: InterruptStackFrame
 
 /// Shared timer bookkeeping for the raw timer entry.
 ///
-/// This is the sole timer-event accounting path. It owns no scheduler policy
-/// and never performs a context switch.
+/// This is the sole timer-event accounting path. It owns no scheduler policy;
+/// the interrupt-return boundary decides whether to keep the current task or
+/// transfer control to a different execution context.
 pub fn record_timer_interrupt() {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     TIMER_PENDING.store(true, Ordering::Release);
