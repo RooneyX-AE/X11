@@ -8,6 +8,7 @@ pub mod execution_registry;
 pub mod interrupt_frame;
 pub mod ioapic;
 pub mod irq_routing;
+pub mod kernel_task;
 pub mod lapic_timer;
 pub mod local_apic;
 pub mod preemption;
