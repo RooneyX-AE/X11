@@ -1,19 +1,20 @@
-//! First concrete x86_64 page-table adapter.
+//! Concrete x86_64 page-table adapter.
 //!
-//! This adapter translates the kernel-owned mapping contract into the
-//! `x86_64` crate's mapper API. Architecture-specific TLB and page-table
-//! details remain contained here.
+//! This module is the only memory layer that knows about the `x86_64` mapper
+//! types. Higher-level code receives the kernel-owned mapping contract and an
+//! explicit TLB flush token.
 
-use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{mapper::MapperFlush, FrameAllocator as X86FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
+use super::frame::{EarlyFrameAllocator, FrameAllocator as X11FrameAllocator};
 use super::page::Page4K;
 use super::page_table::{MappingError, MappingFlush, PageTableMapper};
 use super::virtual::VirtRange;
 use crate::arch::x86_64::paging;
 
-/// TLB flush token returned by a concrete mapping operation.
-pub struct X86Flush(x86_64::structures::paging::mapper::MapperFlush<Size4KiB>);
+/// TLB flush token produced by an x86_64 mapping operation.
+pub struct X86Flush(MapperFlush<Size4KiB>);
 
 impl MappingFlush for X86Flush {
     fn flush(self) {
@@ -21,50 +22,74 @@ impl MappingFlush for X86Flush {
     }
 }
 
-/// Kernel page-table adapter backed by the active x86_64 page table.
-pub struct X86PageTableMapper {
+struct FrameAllocatorAdapter<'a> {
+    inner: &'a mut EarlyFrameAllocator<'a>,
+}
+
+impl X86FrameAllocator<Size4KiB> for FrameAllocatorAdapter<'_> {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        self.inner
+            .allocate_frame()
+            .and_then(|frame| PhysFrame::from_start_address(PhysAddr::new(frame.start_address())).ok())
+    }
+}
+
+/// Page-table adapter backed by the active x86_64 page table.
+pub struct X86PageTableMapper<'a> {
     inner: x86_64::structures::paging::OffsetPageTable<'static>,
+    frame_allocator: FrameAllocatorAdapter<'a>,
     address_space: VirtRange,
 }
 
-impl X86PageTableMapper {
+impl<'a> X86PageTableMapper<'a> {
     /// # Safety
     ///
-    /// The supplied offset must come from `BootInfo.physical_memory_offset`
-    /// after the bootloader established the complete physical-memory mapping.
-    /// The mapper must be initialized only once for its underlying active page
-    /// table.
-    pub unsafe fn new(physical_memory_offset: u64, address_space: VirtRange) -> Self {
-        // SAFETY: The caller upholds the direct-map and single-owner invariants
-        // required by the architecture backend.
+    /// `physical_memory_offset` must be the bootloader-provided direct-map
+    /// offset, and the active page table must remain uniquely owned by this
+    /// mapper for the lifetime of the returned value.
+    pub unsafe fn new(
+        physical_memory_offset: u64,
+        frame_allocator: &'a mut EarlyFrameAllocator<'a>,
+        address_space: VirtRange,
+    ) -> Self {
+        // SAFETY: The caller provides the bootloader-established direct map and
+        // guarantees this is the unique mutable owner of the active table.
         let inner = unsafe { paging::init(physical_memory_offset) };
         Self {
             inner,
+            frame_allocator: FrameAllocatorAdapter { inner: frame_allocator },
             address_space,
         }
     }
 }
 
-impl PageTableMapper for X86PageTableMapper {
+impl PageTableMapper for X86PageTableMapper<'_> {
     type Flush = X86Flush;
 
     fn map_page(&mut self, page: Page4K, physical_address: u64) -> Result<Self::Flush, MappingError> {
         let virtual_range = page.range().ok_or(MappingError::InvalidPhysicalAddress)?;
-        if !self.address_space.contains(virtual_range.start()) {
+        if virtual_range.start() < self.address_space.start()
+            || virtual_range.end() > self.address_space.end()
+        {
             return Err(MappingError::OutsideAddressSpace);
         }
+
         let frame = PhysFrame::<Size4KiB>::from_start_address(PhysAddr::new(physical_address))
             .map_err(|_| MappingError::InvalidPhysicalAddress)?;
         let target = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
 
-        // SAFETY: `inner` owns the active page-table root and `frame` is a
-        // validated 4 KiB physical frame. Flags intentionally remain minimal
-        // until higher-level protection policy is introduced.
+        // SAFETY: The target page, backing frame, and allocator satisfy the
+        // mapper preconditions; the allocator yields only usable 4 KiB frames.
         let flush = unsafe {
-            self.inner
-                .map_to(target, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, &mut NullFrameAllocator)
+            self.inner.map_to(
+                target,
+                frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                &mut self.frame_allocator,
+            )
         }
         .map_err(|_| MappingError::BackendFailure)?;
+
         Ok(X86Flush(flush))
     }
 
@@ -82,13 +107,5 @@ impl PageTableMapper for X86PageTableMapper {
 
     fn address_space(&self) -> VirtRange {
         self.address_space
-    }
-}
-
-struct NullFrameAllocator;
-
-impl x86_64::structures::paging::FrameAllocator<Size4KiB> for NullFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        None
     }
 }
