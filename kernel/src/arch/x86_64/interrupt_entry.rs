@@ -3,7 +3,7 @@
 //! The timer entry stub owns the exact assembly/Rust ABI. It saves all
 //! general-purpose registers, captures the interrupted RSP before touching the
 //! stack, preserves the CPU-owned return frame, aligns the stack for Rust, and
-//! returns with `iretq` without switching tasks.
+//! returns with `iretq` unless the runtime selects a kernel preemption transfer.
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -70,11 +70,29 @@ extern "C" fn timer_entry_rust(
     resume_rsp: u64,
 ) {
     let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
-    let _ = unsafe {
+    let _capture = unsafe {
         crate::arch::x86_64::cpu_local::local()
             .capture_interrupted(registers, frame, resume_rsp)
     };
+
+    // Acknowledge the timer before making a scheduler decision. Any failure in
+    // the deferred runtime path simply returns to the interrupted task.
     crate::arch::x86_64::idt::record_timer_interrupt();
+
+    let Some(runtime_ptr) = crate::arch::x86_64::cpu_local::local().runtime_ptr() else {
+        return;
+    };
+
+    let outcome = unsafe {
+        (&mut *(runtime_ptr as *mut crate::arch::x86_64::runtime::KernelRuntime))
+            .handle_timer_preemption()
+    };
+
+    if let Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToKernel(state)) = outcome {
+        unsafe {
+            crate::arch::x86_64::preempt_return::return_to_kernel(&state);
+        }
+    }
 }
 
 /// Raw timer-entry ABI.
