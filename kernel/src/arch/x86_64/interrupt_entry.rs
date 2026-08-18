@@ -64,15 +64,13 @@ const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
 #[inline(never)]
 extern "C" fn timer_entry_rust(
-    _registers: *mut SavedRegisters,
+    registers: *mut SavedRegisters,
     return_frame: *mut u64,
 ) {
     let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
-    unsafe {
-        // Only the first three words are consumed here, so both kernel and
-        // privilege-transition interrupt frames are safe to acknowledge.
-        let _ = (frame.rip(), frame.cs(), frame.rflags());
-    }
+    let _ = unsafe {
+        crate::arch::x86_64::cpu_local::local().capture_interrupted(registers, frame)
+    };
     crate::arch::x86_64::idt::record_timer_interrupt();
 }
 
