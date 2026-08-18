@@ -132,6 +132,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             match heap::GLOBAL.init(region) {
                                 Ok(()) => {
                                     serial::write_str("X11-OS: heap initialized\r\n");
+                                    let before = heap::GLOBAL.stats();
 
                                     let mut probe = Vec::with_capacity(64);
                                     for value in 0..64u64 {
@@ -142,19 +143,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         && probe.iter().enumerate().all(|(index, value)| {
                                             *value == index as u64 * 3
                                         });
+                                    let during = heap::GLOBAL.stats();
                                     drop(probe);
-                                    serial::write_str(if valid {
+                                    let after = heap::GLOBAL.stats();
+
+                                    serial::write_str(if valid && during.used() > before.used() {
                                         "X11-OS: heap allocation verified\r\n"
                                     } else {
                                         "X11-OS: heap allocation verification failed\r\n"
                                     });
 
-                                    let stats = heap::GLOBAL.stats();
+                                    serial::write_str(if after.used() == before.used() {
+                                        "X11-OS: heap deallocation verified\r\n"
+                                    } else {
+                                        "X11-OS: heap deallocation verification failed\r\n"
+                                    });
+
                                     serial::write_str("X11-OS: heap used bytes = ");
-                                    serial::write_usize(stats.used());
+                                    serial::write_usize(after.used());
                                     serial::write_str("\r\n");
                                     serial::write_str("X11-OS: heap free bytes = ");
-                                    serial::write_usize(stats.free());
+                                    serial::write_usize(after.free());
                                     serial::write_str("\r\n");
                                 }
                                 Err(_) => {
