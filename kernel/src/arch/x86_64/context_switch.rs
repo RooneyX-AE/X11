@@ -6,6 +6,8 @@
 
 use core::arch::asm;
 
+use super::activation::ActivationRecord;
+
 /// Register state owned by the scheduler's kernel-thread context switch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -22,16 +24,7 @@ pub struct Context {
 
 impl Context {
     pub const fn empty() -> Self {
-        Self {
-            rsp: 0,
-            rbp: 0,
-            rbx: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-            rip: 0,
-        }
+        Self { rsp: 0, rbp: 0, rbx: 0, r12: 0, r13: 0, r14: 0, r15: 0, rip: 0 }
     }
 
     pub const fn is_initialized(self) -> bool {
@@ -42,15 +35,6 @@ impl Context {
 const _: () = assert!(core::mem::size_of::<Context>() == 64);
 const _: () = assert!(core::mem::align_of::<Context>() == 8);
 
-/// Switches from `current` to `next` and resumes the saved continuation.
-///
-/// # Safety
-///
-/// Both contexts must be valid kernel contexts for the same x86_64 execution
-/// domain. Their stacks must be writable and live for the duration of the
-/// switch, obey the SysV64 stack-alignment contract, and the next context must
-/// point at executable kernel code. State not represented by `Context` must be
-/// managed by higher layers.
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn switch(current: *mut Context, next: *const Context) {
     core::arch::naked_asm!(
@@ -75,11 +59,13 @@ pub unsafe extern "sysv64" fn switch(current: *mut Context, next: *const Context
     );
 }
 
-/// Builds an initial kernel-thread context.
-///
-/// `stack_top` points one byte past the writable allocation. The first switch
-/// resumes at `entry`; the caller owns the stack storage for the thread.
-pub fn bootstrap_context(stack_top: u64, entry: extern "C" fn() -> !) -> Option<Context> {
+/// Builds an initial kernel-thread context and passes a stable activation
+/// pointer through callee-saved `r12`.
+pub fn bootstrap_context(
+    stack_top: u64,
+    activation: &ActivationRecord,
+    trampoline: extern "C" fn() -> !,
+) -> Option<Context> {
     let aligned = stack_top.checked_sub(8)? & !0xf;
     let entry_rsp = aligned.checked_add(8)?;
     if entry_rsp == 0 || entry_rsp > stack_top || entry_rsp & 0xf != 8 {
@@ -90,72 +76,39 @@ pub fn bootstrap_context(stack_top: u64, entry: extern "C" fn() -> !) -> Option<
         rsp: entry_rsp,
         rbp: 0,
         rbx: 0,
-        r12: 0,
+        r12: activation.pointer(),
         r13: 0,
         r14: 0,
         r15: 0,
-        rip: entry as *const () as usize as u64,
+        rip: trampoline as *const () as usize as u64,
     })
 }
 
-#[repr(C)]
-struct SmokeState {
-    boot: Context,
-    test: Context,
-    reached: bool,
-}
-
-extern "C" fn self_test_entry() -> ! {
-    let state: *mut SmokeState;
-    // SAFETY: `self_test_entry` is reached only from `smoke_test`, which places
-    // a live `SmokeState` pointer in callee-saved `r12` before switching.
+/// Common entry trampoline for all newly created kernel tasks.
+///
+/// # Safety
+/// `r12` must contain a live pointer to an `ActivationRecord` for the task
+/// being entered. The record must outlive the task's execution.
+extern "C" fn task_trampoline() -> ! {
+    let activation: *const ActivationRecord;
     unsafe {
-        asm!("mov {}, r12", out(reg) state, options(nomem, nostack, preserves_flags));
-        (*state).reached = true;
-        switch(&mut (*state).test, &(*state).boot);
-    }
-
-    loop {
-        core::hint::spin_loop();
+        asm!("mov {}, r12", out(reg) activation, options(nomem, nostack, preserves_flags));
+        ((*activation).entry())();
     }
 }
 
-/// Executes one voluntary kernel-thread context switch and returns to the
-/// current continuation. This is a single-CPU bootstrap diagnostic, not the
-/// preemptive scheduler path.
-pub fn smoke_test() -> bool {
-    let mut state = SmokeState {
-        boot: Context::empty(),
-        test: Context::empty(),
-        reached: false,
-    };
-    let mut stack = [0u8; 16 * 1024];
-
-    let stack_top = stack.as_mut_ptr() as usize + stack.len();
-    let Some(mut context) = bootstrap_context(stack_top as u64, self_test_entry) else {
-        return false;
-    };
-
-    context.r12 = (&mut state as *mut SmokeState) as usize as u64;
-    state.test = context;
-
-    // SAFETY: The stack and state are owned by this activation record, remain
-    // live across the voluntary switch, and interrupts are disabled by the
-    // caller. The callee-saved r12 register carries only this test-state pointer.
-    unsafe {
-        switch(&mut state.boot, &state.test);
-    }
-
-    state.reached
+pub fn bootstrap_kernel_context(stack_top: u64, activation: &ActivationRecord) -> Option<Context> {
+    bootstrap_context(stack_top, activation, task_trampoline)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_context, Context};
+    use crate::arch::x86_64::activation::ActivationRecord;
+    use crate::scheduler::TaskId;
 
-    extern "C" fn never_returns() -> ! {
-        loop {}
-    }
+    extern "C" fn never_returns() -> ! { loop {} }
+    extern "C" fn trampoline() -> ! { loop {} }
 
     #[test]
     fn context_is_zero_before_initialization() {
@@ -169,14 +122,17 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_stack_keeps_sysv_entry_alignment() {
-        let context = bootstrap_context(0x20_000, never_returns).unwrap();
+    fn bootstrap_context_carries_activation_pointer() {
+        let activation = ActivationRecord::new(TaskId::new(1, 1), never_returns);
+        let context = bootstrap_context(0x20_000, &activation, trampoline).unwrap();
         assert_eq!(context.rsp & 0xf, 0x8);
+        assert_eq!(context.r12, activation.pointer());
         assert!(context.is_initialized());
     }
 
     #[test]
     fn bootstrap_rejects_invalid_stack() {
-        assert!(bootstrap_context(0, never_returns).is_none());
+        let activation = ActivationRecord::new(TaskId::new(1, 1), never_returns);
+        assert!(bootstrap_context(0, &activation, trampoline).is_none());
     }
 }
