@@ -76,7 +76,8 @@ pub unsafe extern "sysv64" fn switch(current: *mut Context, next: *const Context
 /// resumes at `entry`; the caller owns the stack storage for the thread.
 pub fn bootstrap_context(stack_top: u64, entry: extern "C" fn() -> !) -> Option<Context> {
     let aligned = stack_top.checked_sub(8)? & !0xf;
-    if aligned == 0 {
+    let entry_rsp = aligned.checked_add(8)?;
+    if entry_rsp == 0 || entry_rsp > stack_top {
         return None;
     }
 
@@ -94,10 +95,26 @@ pub fn bootstrap_context(stack_top: u64, entry: extern "C" fn() -> !) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::Context;
+    use super::{bootstrap_context, Context};
+
+    extern "C" fn never_returns() -> ! {
+        loop {}
+    }
 
     #[test]
     fn context_is_zero_before_initialization() {
         assert!(!Context::empty().is_initialized());
+    }
+
+    #[test]
+    fn bootstrap_stack_keeps_sysv_entry_alignment() {
+        let context = bootstrap_context(0x20_000, never_returns).unwrap();
+        assert_eq!((context.rsp + 8) & 0xf, 0x8);
+        assert!(context.is_initialized());
+    }
+
+    #[test]
+    fn bootstrap_rejects_invalid_stack() {
+        assert!(bootstrap_context(0, never_returns).is_none());
     }
 }
