@@ -182,3 +182,37 @@ impl Scheduler {
     fn task(&self, id: TaskId) -> Option<&TaskControlBlock> { let task = self.tasks.get(id.index() as usize)?.as_deref()?; (task.id() == id).then_some(task) }
     fn task_mut(&mut self, id: TaskId) -> Option<&mut TaskControlBlock> { let task = self.tasks.get_mut(id.index() as usize)?.as_deref_mut()?; if task.id() == id { Some(task) } else { None } }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Priority, Scheduler, TaskState};
+
+    #[test]
+    fn scheduler_round_robin_cycles_a_b_a_b() {
+        let mut scheduler = Scheduler::new();
+        let a = scheduler.create_task(Priority::DEFAULT);
+        let b = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(a));
+        assert!(scheduler.make_ready(b));
+
+        assert_eq!(scheduler.schedule_next().next, Some(a));
+        assert_eq!(scheduler.schedule_next().next, Some(b));
+        assert_eq!(scheduler.schedule_next().next, Some(a));
+        assert_eq!(scheduler.schedule_next().next, Some(b));
+
+        assert_eq!(scheduler.state(a), Some(TaskState::Ready));
+        assert_eq!(scheduler.state(b), Some(TaskState::Running));
+        assert_eq!(scheduler.current(), Some(b));
+    }
+
+    #[test]
+    fn scheduler_does_not_self_dispatch_single_task() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(task));
+        assert_eq!(scheduler.schedule_next().next, Some(task));
+        assert_eq!(scheduler.schedule_next().next, None);
+        assert_eq!(scheduler.state(task), Some(TaskState::Running));
+        assert_eq!(scheduler.ready_len(), 0);
+    }
+}
