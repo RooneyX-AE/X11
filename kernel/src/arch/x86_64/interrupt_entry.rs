@@ -4,14 +4,10 @@
 //! assembly/Rust ABI first so preemption can be reviewed independently from
 //! interrupt routing.
 
-use core::arch::asm;
-
-/// Register state captured by the timer entry stub before Rust executes.
-///
-/// The CPU-owned return frame follows these fields on the interrupted stack.
+/// General-purpose registers saved by the timer entry stub.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct InterruptContext {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SavedRegisters {
     pub rax: u64,
     pub rcx: u64,
     pub rdx: u64,
@@ -27,61 +23,86 @@ pub struct InterruptContext {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
-    pub rip: u64,
-    pub cs: u64,
-    pub rflags: u64,
-    pub rsp: u64,
-    pub ss: u64,
 }
 
-const GPR_BYTES: usize = 15 * core::mem::size_of::<u64>();
+/// CPU-owned interrupt return frame.
+///
+/// Same-CPL kernel interrupts contain RIP/CS/RFLAGS. A privilege transition
+/// additionally contains the interrupted RSP/SS pair. The wrapper keeps the
+/// raw pointer so Rust never reads absent words from a same-CPL frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InterruptReturnFrame {
+    raw: *mut u64,
+}
+
+unsafe impl Send for InterruptReturnFrame {}
+unsafe impl Sync for InterruptReturnFrame {}
+
+impl InterruptReturnFrame {
+    /// # Safety
+    /// `raw` must point to the first 8-byte word of a CPU interrupt frame.
+    pub const unsafe fn from_raw(raw: *mut u64) -> Self {
+        Self { raw }
+    }
+
+    /// # Safety
+    /// The pointer must reference a valid CPU-owned return frame.
+    pub unsafe fn rip(self) -> u64 {
+        unsafe { *self.raw.add(0) }
+    }
+
+    /// # Safety
+    /// The pointer must reference a valid CPU-owned return frame.
+    pub unsafe fn cs(self) -> u64 {
+        unsafe { *self.raw.add(1) }
+    }
+
+    /// # Safety
+    /// The pointer must reference a valid CPU-owned return frame.
+    pub unsafe fn rflags(self) -> u64 {
+        unsafe { *self.raw.add(2) }
+    }
+
+    /// # Safety
+    /// Only valid when the saved CS indicates a privilege-level change.
+    pub unsafe fn rsp(self) -> Option<u64> {
+        if unsafe { self.cs() } & 3 == 0 {
+            return None;
+        }
+        Some(unsafe { *self.raw.add(3) })
+    }
+
+    /// # Safety
+    /// Only valid when the saved CS indicates a privilege-level change.
+    pub unsafe fn ss(self) -> Option<u64> {
+        if unsafe { self.cs() } & 3 == 0 {
+            return None;
+        }
+        Some(unsafe { *self.raw.add(4) })
+    }
+
+    pub unsafe fn is_kernel_return(self) -> bool {
+        unsafe { self.rip() != 0 && self.cs() & 3 == 0 && self.rflags() & 2 != 0 }
+    }
+}
+
+const GPR_BYTES: usize = core::mem::size_of::<SavedRegisters>();
 const SAME_CPL_FRAME_BYTES: usize = 3 * core::mem::size_of::<u64>();
 const CROSS_CPL_FRAME_BYTES: usize = 5 * core::mem::size_of::<u64>();
 
-const _: () = assert!(core::mem::size_of::<InterruptContext>() == 160);
-const _: () = assert!(core::mem::align_of::<InterruptContext>() == 8);
-
-impl InterruptContext {
-    pub const fn same_cpl(rip: u64, cs: u64, rflags: u64) -> Self {
-        Self {
-            rax: 0,
-            rcx: 0,
-            rdx: 0,
-            rbx: 0,
-            rbp: 0,
-            rsi: 0,
-            rdi: 0,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-            rip,
-            cs,
-            rflags,
-            rsp: 0,
-            ss: 0,
-        }
-    }
-
-    pub const fn is_kernel_return(self) -> bool {
-        self.rip != 0 && self.cs & 3 == 0 && self.rflags & 2 != 0
-    }
-
-    pub const fn captured_bytes(same_cpl: bool) -> usize {
-        GPR_BYTES + if same_cpl { SAME_CPL_FRAME_BYTES } else { CROSS_CPL_FRAME_BYTES }
-    }
-}
+const _: () = assert!(GPR_BYTES == 120);
+const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
 /// Rust-side hook used by the future timer entry path.
 ///
 /// Keeping it as a no-op for now lets the assembly ABI compile and be tested
 /// without enabling actual preemption before scheduler integration is ready.
 #[inline(never)]
-extern "C" fn timer_entry_rust(_context: *mut InterruptContext) {}
+extern "C" fn timer_entry_rust(
+    _registers: *mut SavedRegisters,
+    _return_frame: *mut u64,
+) {
+}
 
 /// Naked timer-entry prototype. It saves all general-purpose registers,
 /// invokes the Rust hook, restores the registers, and returns with IRETQ.
@@ -106,6 +127,7 @@ pub unsafe extern "C" fn timer_entry() {
         "push rcx",
         "push rax",
         "mov rdi, rsp",
+        "lea rsi, [rsp + 120]",
         "call {rust_hook}",
         "pop rax",
         "pop rcx",
@@ -129,28 +151,45 @@ pub unsafe extern "C" fn timer_entry() {
 
 #[cfg(test)]
 mod tests {
-    use super::InterruptContext;
+    use super::{InterruptReturnFrame, SavedRegisters, CROSS_CPL_FRAME_BYTES, GPR_BYTES, SAME_CPL_FRAME_BYTES};
 
     #[test]
-    fn same_cpl_context_requires_kernel_code_segment() {
-        let context = InterruptContext::same_cpl(0x1000, 0x10, 0x202);
-        assert!(context.is_kernel_return());
+    fn saved_register_layout_is_exact() {
+        assert_eq!(core::mem::size_of::<SavedRegisters>(), 120);
+        assert_eq!(GPR_BYTES, 120);
     }
 
     #[test]
-    fn user_code_segment_is_not_kernel_return() {
-        let context = InterruptContext::same_cpl(0x1000, 0x1b, 0x202);
-        assert!(!context.is_kernel_return());
+    fn return_frame_sizes_match_same_and_cross_cpl() {
+        assert_eq!(SAME_CPL_FRAME_BYTES, 24);
+        assert_eq!(CROSS_CPL_FRAME_BYTES, 40);
     }
 
     #[test]
-    fn captured_sizes_match_amd64_interrupt_frames() {
-        assert_eq!(InterruptContext::captured_bytes(true), 144);
-        assert_eq!(InterruptContext::captured_bytes(false), 160);
+    fn kernel_return_frame_does_not_read_rsp_or_ss() {
+        let mut raw = [0u64; 5];
+        raw[0] = 0x1000;
+        raw[1] = 0x10;
+        raw[2] = 0x202;
+        raw[3] = 0xDEAD;
+        raw[4] = 0xBEEF;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        assert!(unsafe { frame.is_kernel_return() });
+        assert_eq!(unsafe { frame.rsp() }, None);
+        assert_eq!(unsafe { frame.ss() }, None);
     }
-}
 
-#[allow(dead_code)]
-fn _keep_asm_import_live() {
-    let _ = asm as unsafe fn();
+    #[test]
+    fn user_return_frame_reads_rsp_and_ss() {
+        let mut raw = [0u64; 5];
+        raw[0] = 0x1000;
+        raw[1] = 0x1B;
+        raw[2] = 0x202;
+        raw[3] = 0x8000;
+        raw[4] = 0x23;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        assert!(!unsafe { frame.is_kernel_return() });
+        assert_eq!(unsafe { frame.rsp() }, Some(0x8000));
+        assert_eq!(unsafe { frame.ss() }, Some(0x23));
+    }
 }
