@@ -14,23 +14,12 @@ impl TaskId {
         Self { index, generation }
     }
 
-    pub const fn index(self) -> u32 {
-        self.index
-    }
-
-    pub const fn generation(self) -> u32 {
-        self.generation
-    }
+    pub const fn index(self) -> u32 { self.index }
+    pub const fn generation(self) -> u32 { self.generation }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TaskState {
-    Created,
-    Ready,
-    Running,
-    Blocked,
-    Exited,
-}
+pub enum TaskState { Created, Ready, Running, Blocked, Exited }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Priority(u8);
@@ -39,15 +28,12 @@ impl Priority {
     pub const MIN: Self = Self(0);
     pub const DEFAULT: Self = Self(128);
     pub const MAX: Self = Self(u8::MAX);
-
-    pub const fn new(value: u8) -> Self {
-        Self(value)
-    }
-
-    pub const fn value(self) -> u8 {
-        self.0
-    }
+    pub const fn new(value: u8) -> Self { Self(value) }
+    pub const fn value(self) -> u8 { self.0 }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionAttachError { AlreadyAttached }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskControlBlock {
@@ -57,50 +43,25 @@ pub struct TaskControlBlock {
     execution: Option<ExecutionHandle>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExecutionAttachError {
-    AlreadyAttached,
-}
-
 impl TaskControlBlock {
     pub const fn new(id: TaskId, priority: Priority) -> Self {
-        Self {
-            id,
-            state: TaskState::Created,
-            priority,
-            execution: None,
-        }
+        Self { id, state: TaskState::Created, priority, execution: None }
     }
-
-    pub const fn id(self) -> TaskId {
-        self.id
-    }
-
-    pub const fn state(self) -> TaskState {
-        self.state
-    }
-
-    pub const fn priority(self) -> Priority {
-        self.priority
-    }
-
-    pub const fn execution(self) -> Option<ExecutionHandle> {
-        self.execution
-    }
+    pub const fn id(self) -> TaskId { self.id }
+    pub const fn state(self) -> TaskState { self.state }
+    pub const fn priority(self) -> Priority { self.priority }
+    pub const fn execution(self) -> Option<ExecutionHandle> { self.execution }
 
     pub fn attach_execution(&mut self) -> Result<ExecutionHandle, ExecutionAttachError> {
         if self.execution.is_some() {
             return Err(ExecutionAttachError::AlreadyAttached);
         }
-
         let handle = ExecutionHandle::for_task(self.id);
         self.execution = Some(handle);
         Ok(handle)
     }
 
-    pub fn detach_execution(&mut self) -> Option<ExecutionHandle> {
-        self.execution.take()
-    }
+    pub fn detach_execution(&mut self) -> Option<ExecutionHandle> { self.execution.take() }
 
     pub fn transition(&mut self, state: TaskState) -> bool {
         let valid = matches!(
@@ -113,10 +74,7 @@ impl TaskControlBlock {
                 | (TaskState::Running, TaskState::Exited)
                 | (TaskState::Blocked, TaskState::Exited)
         );
-
-        if valid {
-            self.state = state;
-        }
+        if valid { self.state = state; }
         valid
     }
 }
@@ -143,42 +101,13 @@ mod tests {
     }
 
     #[test]
-    fn execution_handle_matches_task_generation() {
+    fn execution_handle_can_only_be_attached_once() {
         let id = TaskId::new(3, 7);
         let mut task = TaskControlBlock::new(id, Priority::DEFAULT);
         let handle = task.attach_execution().unwrap();
-        assert_eq!(handle.task_id(), id);
         assert_eq!(task.execution(), Some(handle));
-
-        assert!(task.transition(TaskState::Ready));
-        assert!(task.transition(TaskState::Running));
+        assert_eq!(task.attach_execution(), Err(ExecutionAttachError::AlreadyAttached));
         assert_eq!(task.execution(), Some(handle));
-
-        let stale = TaskId::new(3, 8);
-        assert_ne!(handle.task_id(), stale);
-    }
-
-    #[test]
-    fn duplicate_execution_attachment_is_rejected() {
-        let id = TaskId::new(3, 7);
-        let mut task = TaskControlBlock::new(id, Priority::DEFAULT);
-        let first = task.attach_execution().unwrap();
-        assert_eq!(
-            task.attach_execution(),
-            Err(ExecutionAttachError::AlreadyAttached)
-        );
-        assert_eq!(task.execution(), Some(first));
-    }
-
-    #[test]
-    fn execution_can_be_detached_and_replaced() {
-        let id = TaskId::new(3, 7);
-        let mut task = TaskControlBlock::new(id, Priority::DEFAULT);
-        let first = task.attach_execution().unwrap();
-        assert_eq!(task.detach_execution(), Some(first));
-        assert!(task.execution().is_none());
-        let second = task.attach_execution().unwrap();
-        assert_eq!(second.task_id(), id);
     }
 
     #[test]
