@@ -1,12 +1,29 @@
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 const COM1: u16 = 0x3F8;
-static INITIALIZED: AtomicBool = AtomicBool::new(false);
+const UNINITIALIZED: u8 = 0;
+const INITIALIZING: u8 = 1;
+const READY: u8 = 2;
+
+static STATE: AtomicU8 = AtomicU8::new(UNINITIALIZED);
 
 pub fn init() {
-    if INITIALIZED.swap(true, Ordering::AcqRel) {
-        return;
+    match STATE.compare_exchange(
+        UNINITIALIZED,
+        INITIALIZING,
+        Ordering::Acquire,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {}
+        Err(READY) => return,
+        Err(INITIALIZING) => {
+            while STATE.load(Ordering::Acquire) == INITIALIZING {
+                core::hint::spin_loop();
+            }
+            return;
+        }
+        Err(_) => unreachable!(),
     }
 
     unsafe {
@@ -18,10 +35,12 @@ pub fn init() {
         outb(COM1 + 2, 0xC7); // Enable FIFO, clear them, 14-byte threshold.
         outb(COM1 + 4, 0x0B); // IRQs enabled, RTS/DSR set.
     }
+
+    STATE.store(READY, Ordering::Release);
 }
 
 pub fn write_byte(byte: u8) {
-    if !INITIALIZED.load(Ordering::Acquire) {
+    if STATE.load(Ordering::Acquire) != READY {
         init();
     }
 
