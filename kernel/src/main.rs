@@ -1,7 +1,9 @@
+#![feature(abi_x86_interrupt)]
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod arch;
 mod serial;
 
 use bootloader_api::{entry_point, BootInfo};
@@ -12,6 +14,10 @@ entry_point!(kernel_main);
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
     serial::write_str("X11-OS: kernel entry reached\r\n");
+
+    arch::x86_64::init();
+    serial::write_str("X11-OS: CPU foundation initialized\r\n");
+
     serial::write_str("X11-OS: BootInfo received\r\n");
     serial::write_str("X11-OS: memory regions = ");
     serial::write_usize(boot_info.memory_regions.len());
