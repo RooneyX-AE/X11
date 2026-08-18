@@ -93,8 +93,15 @@ impl KernelRuntime {
             };
         };
 
-        if self.manager.executions.get(task_id).is_none() {
+        let Some(binding) = self.manager.executions.get_mut(task_id) else {
             return Err(RuntimeError::MissingExecutionPair);
+        };
+
+        // Never consume the CPU-local snapshot when the task already owns one.
+        // This keeps snapshot ownership transactional if an interrupt is
+        // observed twice before the first snapshot has been consumed.
+        if binding.interrupted().is_some() {
+            return Err(RuntimeError::InterruptedState(ExecutionError::InterruptedStateAlreadyPresent));
         }
 
         let Some((captured_task, snapshot)) = cpu_local::local().take_interrupted() else {
@@ -102,7 +109,6 @@ impl KernelRuntime {
         };
         debug_assert_eq!(captured_task, task_id);
 
-        let binding = self.manager.executions.get_mut(task_id).ok_or(RuntimeError::MissingExecutionPair)?;
         binding.install_interrupted(snapshot).map_err(RuntimeError::InterruptedState)
     }
 
