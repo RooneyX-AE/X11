@@ -91,3 +91,12 @@ jobs:
           grep -q 'X11-OS: interrupts enabled in task B' qemu.log
           grep -q 'X11-OS: task A resumed after timer preemption' qemu.log
           grep -q 'X11-OS: task B resumed through kernel iretq' qemu.log
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-ci-diagnostics
+          path: |
+            cargo-check.log
+            qemu.log
+          if-no-files-found: ignore
