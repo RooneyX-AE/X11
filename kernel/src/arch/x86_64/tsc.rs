@@ -48,11 +48,7 @@ impl TscClocksource {
         }
 
         let frequency = detect_frequency()?;
-        let start_ticks = unsafe {
-            // SAFETY: RDTSC is a non-privileged architectural instruction on
-            // x86_64 and does not access memory.
-            _rdtsc()
-        };
+        let start_ticks = read_ticks();
 
         Ok(Self {
             start_ticks,
@@ -63,22 +59,32 @@ impl TscClocksource {
     pub const fn frequency(self) -> TscFrequency {
         self.frequency
     }
+
+    pub fn read_ticks() -> u64 {
+        read_ticks()
+    }
 }
 
 impl Clocksource for TscClocksource {
     type Error = TscError;
 
     fn now(&self) -> Result<MonotonicTime, Self::Error> {
-        let ticks = unsafe {
-            // SAFETY: See `try_new`; the CPU supports x86_64 RDTSC.
-            _rdtsc()
-        };
+        let ticks = read_ticks();
         let elapsed = ticks
             .checked_sub(self.start_ticks)
             .ok_or(TscError::TimeOverflow)?;
         ticks_to_nanos(elapsed, self.frequency.hz)
             .map(MonotonicTime::from_nanos)
             .ok_or(TscError::TimeOverflow)
+    }
+}
+
+#[inline]
+fn read_ticks() -> u64 {
+    unsafe {
+        // SAFETY: RDTSC is a non-privileged architectural instruction on
+        // x86_64 and does not access memory.
+        _rdtsc()
     }
 }
 
