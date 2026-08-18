@@ -9,5 +9,9 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "x11-os-user-hello"
+path = "src/main.rs"
+
 [dependencies]
 x11-os-abi = { path = "../../abi" }
