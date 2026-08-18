@@ -131,9 +131,12 @@ impl KernelRuntime {
     }
 
     /// Handles timer-triggered preemption at the interrupt-return boundary.
+    ///
     /// The interrupted CPU snapshot is committed before the scheduler mutates
     /// task state, so a failed snapshot commit cannot leave the scheduler
     /// claiming a new Running task while the CPU is still executing the old one.
+    /// The same timer event also advances the sleep scheduler using timer ticks,
+    /// so blocked tasks become runnable before the next dispatch decision.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
         let _ = super::idt::take_timer_pending();
 
@@ -143,9 +146,13 @@ impl KernelRuntime {
             return Ok(InterruptPreemption::ResumeCurrent);
         }
 
+        let now = super::idt::timer_ticks();
+        let _woken = self.manager.expire_sleepers(now);
+
         let current = self.manager.scheduler.current();
         let Some(candidate) = self.manager.scheduler.next_ready() else {
             self.discard_interrupted_state();
+            self.request_reschedule();
             return Ok(InterruptPreemption::ResumeCurrent);
         };
         if Some(candidate) == current {
