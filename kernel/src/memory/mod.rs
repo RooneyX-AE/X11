@@ -1,19 +1,19 @@
 //! Physical and virtual memory policy.
 //!
 //! Early memory is split into boot metadata translation, architecture-neutral
-//! ranges, frame allocation, virtual-address policy, and page primitives.
-//! Consumers depend on these kernel-owned contracts rather than bootloader
-//! implementation details.
+//! ranges, frame allocation, physical-memory mapping, and virtual-address
+//! policy. Consumers depend on these kernel-owned contracts rather than
+//! bootloader implementation details.
 
 mod boot;
 mod frame;
-mod page;
+mod physical;
 mod region;
 mod virtual;
 
 pub use boot::MemorySummary;
 pub use frame::{EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE};
-pub use page::{Page4K, PAGE_SIZE_4K};
+pub use physical::PhysicalMemoryMapping;
 pub use region::PhysRange;
 pub use virtual::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
 
