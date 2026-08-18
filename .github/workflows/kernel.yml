@@ -49,3 +49,4 @@ jobs:
           grep -q 'X11-OS: page unmapping verified' qemu.log
           grep -q 'X11-OS: heap initialized' qemu.log
           grep -q 'X11-OS: heap allocation verified' qemu.log
+          grep -q 'X11-OS: heap deallocation verified' qemu.log
