@@ -151,6 +151,11 @@ impl Scheduler {
         self.tasks.iter().filter(|task| task.is_some()).count()
     }
 
+    #[cfg(test)]
+    fn task_ptr(&self, id: TaskId) -> Option<*const TaskControlBlock> {
+        self.task(id).map(|task| task as *const TaskControlBlock)
+    }
+
     fn task(&self, id: TaskId) -> Option<&TaskControlBlock> {
         let task = self.tasks.get(id.index() as usize)?.as_deref()?;
         (task.id() == id).then_some(task)
@@ -199,5 +204,19 @@ mod tests {
         assert_ne!(first, replacement);
         assert_eq!(replacement.index(), first.index());
         assert_eq!(scheduler.state(first), None);
+    }
+
+    #[test]
+    fn task_address_is_stable_when_slot_table_grows() {
+        let mut scheduler = Scheduler::new();
+        let first = scheduler.create_task(Priority::DEFAULT);
+        let before = scheduler.task_ptr(first).expect("task must exist");
+
+        for _ in 0..128 {
+            let _ = scheduler.create_task(Priority::DEFAULT);
+        }
+
+        let after = scheduler.task_ptr(first).expect("task must survive growth");
+        assert_eq!(before, after);
     }
 }
