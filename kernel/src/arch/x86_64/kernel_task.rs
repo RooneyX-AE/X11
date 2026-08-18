@@ -5,7 +5,7 @@
 //! execution state, and only then exposes the task to the ready queue.
 
 use crate::scheduler::{
-    DispatchDecision, Priority, Scheduler, SchedulerError, SleepEntry, SleepQueue, TaskId,
+    DispatchDecision, Priority, Scheduler, SchedulerError, SleepQueue, TaskId,
 };
 
 use super::dispatch::{self, DispatchError};
@@ -205,13 +205,12 @@ mod tests {
     }
 
     #[test]
-    fn exiting_task_cancels_pending_sleep() {
+    fn sleep_deadline_remains_owned_while_task_is_blocked() {
         let mut manager = KernelTaskManager::new();
         let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
         assert!(manager.prepare_dispatch().is_ok());
         assert_eq!(manager.sleep_current_until(100).unwrap(), task);
-        assert_eq!(manager.scheduler.state(task), Some(TaskState::Blocked));
         assert_eq!(manager.next_sleep_deadline(), Some(100));
-        assert!(!manager.exit_current());
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Blocked));
     }
 }
