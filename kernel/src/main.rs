@@ -6,7 +6,7 @@
 mod arch;
 mod serial;
 
-use bootloader_api::{entry_point, BootInfo};
+use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
 
 entry_point!(kernel_main);
