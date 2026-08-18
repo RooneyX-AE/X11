@@ -18,7 +18,7 @@ pub use address_space::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
 pub use boot::MemorySummary;
 pub use frame::{EarlyFrameAllocator, FrameAllocator};
 pub use page::{Page4K, PAGE_SIZE_4K};
-pub use page_table::{MappingError, MappingFlush, PageTableMapper};
+pub use page_table::{MappingError, MappingFlush, PageAccess, PageTableMapper};
 pub use physical::PhysicalMemoryMapping;
 pub use user::{validate_slice, UserRangeError};
 
