@@ -1,8 +1,9 @@
-//! Deferred scheduler request state.
+//! Reschedule request state.
 //!
-//! Interrupt handlers may request rescheduling, but they must not perform a
-//! context switch themselves. The request is consumed only at an explicit
-//! safe-return boundary.
+//! Interrupt paths may request a deferred reschedule, while the x86_64 timer
+//! return boundary may also consume the request immediately when it performs
+//! a validated direct context transfer. The flag itself is edge-triggered and
+//! must be consumed exactly once by whichever return path owns the transfer.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
