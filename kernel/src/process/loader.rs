@@ -44,6 +44,17 @@ impl LoadResult {
     pub fn page(self, index: usize) -> Option<MappedPage> {
         if index >= self.mapped_pages { None } else { self.pages[index] }
     }
+
+    pub fn contains_page(self, virtual_address: u64) -> bool {
+        self.page_base(virtual_address)
+            .is_some_and(|page| (0..self.mapped_pages).any(|index| {
+                self.page(index).is_some_and(|mapped| mapped.virtual_address == page)
+            }))
+    }
+
+    fn page_base(self, virtual_address: u64) -> Option<u64> {
+        Some(virtual_address & !(PAGE_SIZE_4K - 1))
+    }
 }
 
 pub fn map_load_plan<M: PageTableMapper>(
