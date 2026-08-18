@@ -102,7 +102,8 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
 
         let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_address));
         let mut table_ptr = self.inner.level_4_table() as *const PageTable;
-        let mut effective = PageTableFlags::PRESENT;
+        let mut effective_user = true;
+        let mut effective_writable = true;
         let indexes = [page.p4_index(), page.p3_index(), page.p2_index(), page.p1_index()];
 
         for (level, index) in indexes.into_iter().enumerate() {
@@ -117,17 +118,32 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
                 return None;
             }
 
-            effective |= flags & (PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+            effective_user &= flags.contains(PageTableFlags::USER_ACCESSIBLE);
+            effective_writable &= flags.contains(PageTableFlags::WRITABLE);
 
             if level == 3 || ((level == 1 || level == 2) && flags.contains(PageTableFlags::HUGE_PAGE)) {
-                return Some(effective);
+                let mut result = PageTableFlags::PRESENT;
+                if effective_user {
+                    result |= PageTableFlags::USER_ACCESSIBLE;
+                }
+                if effective_writable {
+                    result |= PageTableFlags::WRITABLE;
+                }
+                return Some(result);
             }
 
             let next_table = self.inner.phys_offset().as_u64().checked_add(entry.addr().as_u64())?;
             table_ptr = next_table as *const PageTable;
         }
 
-        Some(effective)
+        let mut result = PageTableFlags::PRESENT;
+        if effective_user {
+            result |= PageTableFlags::USER_ACCESSIBLE;
+        }
+        if effective_writable {
+            result |= PageTableFlags::WRITABLE;
+        }
+        Some(result)
     }
 }
 
