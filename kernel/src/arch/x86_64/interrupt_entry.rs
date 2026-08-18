@@ -32,9 +32,6 @@ pub struct InterruptReturnFrame {
     raw: *mut u64,
 }
 
-unsafe impl Send for InterruptReturnFrame {}
-unsafe impl Sync for InterruptReturnFrame {}
-
 impl InterruptReturnFrame {
     pub const unsafe fn from_raw(raw: *mut u64) -> Self { Self { raw } }
 
