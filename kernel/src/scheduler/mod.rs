@@ -66,9 +66,7 @@ impl Scheduler {
         })
     }
 
-    pub fn execution(&self, id: TaskId) -> Option<ExecutionHandle> {
-        self.task(id).and_then(TaskControlBlock::execution)
-    }
+    pub fn execution(&self, id: TaskId) -> Option<ExecutionHandle> { self.task(id).and_then(TaskControlBlock::execution) }
 
     pub fn destroy_created(&mut self, id: TaskId) -> Result<ExecutionHandle, SchedulerError> {
         let index = id.index() as usize;
@@ -83,8 +81,11 @@ impl Scheduler {
 
     pub fn make_ready(&mut self, id: TaskId) -> bool {
         if self.ready.contains(id) { return false; }
-        let Some(task) = self.task_mut(id) else { return false; };
-        task.transition(TaskState::Ready) && self.ready.push(id)
+        let transitioned = {
+            let Some(task) = self.task_mut(id) else { return false; };
+            task.transition(TaskState::Ready)
+        };
+        transitioned && self.ready.push(id)
     }
 
     pub fn next_ready(&self) -> Option<TaskId> { self.ready.peek() }
@@ -122,10 +123,13 @@ impl Scheduler {
     pub fn block_current_on(&mut self, waiters: &mut WaitQueue) -> Result<TaskId, SchedulerError> {
         let id = self.current.ok_or(SchedulerError::TaskNotFound)?;
         if waiters.contains(id) { return Err(SchedulerError::WaitQueueAlreadyContainsTask); }
-        let Some(task) = self.task_mut(id) else { return Err(SchedulerError::TaskNotFound); };
-        if !task.transition(TaskState::Blocked) { return Err(SchedulerError::TaskNotFound); }
-        if waiters.enqueue(id).is_err() {
-            let _ = task.transition(TaskState::Running);
+        let transitioned = {
+            let Some(task) = self.task_mut(id) else { return Err(SchedulerError::TaskNotFound); };
+            task.transition(TaskState::Blocked)
+        };
+        if !transitioned { return Err(SchedulerError::TaskNotFound); }
+        if let Err(WaitQueueError::AlreadyQueued) = waiters.enqueue(id) {
+            if let Some(task) = self.task_mut(id) { let _ = task.transition(TaskState::Running); }
             return Err(SchedulerError::WaitQueueAlreadyContainsTask);
         }
         self.current = None;
@@ -134,19 +138,24 @@ impl Scheduler {
 
     pub fn block_current(&mut self) -> bool {
         let Some(id) = self.current else { return false; };
-        let Some(task) = self.task_mut(id) else { return false; };
-        let changed = task.transition(TaskState::Blocked);
+        let changed = {
+            let Some(task) = self.task_mut(id) else { return false; };
+            task.transition(TaskState::Blocked)
+        };
         if changed { self.current = None; }
         changed
     }
 
     pub fn wake_one(&mut self, waiters: &mut WaitQueue) -> Option<TaskId> {
         while let Some(id) = waiters.dequeue() {
-            let Some(task) = self.task_mut(id) else { continue; };
-            if task.state() != TaskState::Blocked { continue; }
-            if !task.transition(TaskState::Ready) { continue; }
+            let ready = {
+                let Some(task) = self.task_mut(id) else { continue; };
+                if task.state() != TaskState::Blocked { continue; }
+                task.transition(TaskState::Ready)
+            };
+            if !ready { continue; }
             if !self.ready.push(id) {
-                let _ = task.transition(TaskState::Blocked);
+                if let Some(task) = self.task_mut(id) { let _ = task.transition(TaskState::Blocked); }
                 let _ = waiters.enqueue(id);
                 return None;
             }
