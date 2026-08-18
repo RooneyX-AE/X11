@@ -13,6 +13,7 @@ mod load_plan;
 mod loader;
 mod manager;
 mod populate;
+mod scheduler_binding;
 mod stack;
 mod state;
 
@@ -23,7 +24,8 @@ pub use image_state::{ProcessImage, ProcessImageError};
 pub use initial_context::{InitialContext, InitialContextError};
 pub use load_plan::{LoadPlan, LoadPlanError, SegmentMapping};
 pub use loader::{map_load_plan, LoadError, LoadResult, MappedPage, MAX_MAPPED_PAGES};
-pub use manager::{ProcessManager, ProcessManagerError, MAX_PROCESSES};
+pub use manager::{ProcessManager, ProcessManagerError, SpawnedProcess, MAX_PROCESSES};
 pub use populate::{populate_image, ImagePageWriter, PopulateError};
+pub use scheduler_binding::{bind_and_ready, ProcessSchedulerBindError};
 pub use stack::{StackPlanError, UserStackPlan};
 pub use state::{ExitedProcess, ProcessState, ProcessTransitionError, ReadyProcess, RunningProcess};
