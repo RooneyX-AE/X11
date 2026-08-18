@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, path::PathBuf};
 
 fn main() {
     let kernel = env::var_os("CARGO_BIN_FILE_X11_OS_KERNEL_x11-os-kernel")
