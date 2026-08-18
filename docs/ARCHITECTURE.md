@@ -38,6 +38,8 @@ Lower layers must not depend on higher-level policy. Architecture code may expos
 
 The kernel may depend on architecture-specific interfaces through an explicit architecture boundary. Architecture-independent code should not import x86_64 implementation details directly.
 
+Memory policy and contracts live in `kernel/src/memory/`. Concrete hardware paging implementations live behind `kernel/src/arch/<architecture>/` and consume only the public memory contracts. The generic memory layer must remain portable enough that a future architecture can provide its own backend without moving page-allocation policy into the architecture module.
+
 ## API stability classes
 
 ### Internal
