@@ -4,12 +4,14 @@
 //! table never relocates a live task object. Architecture-specific execution
 //! state may therefore safely retain a stable pointer to its owning task.
 
+mod execution;
 mod run_queue;
 mod task;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+pub use execution::{ExecutionBinding, ExecutionState};
 pub use run_queue::RunQueue;
 pub use task::{Priority, TaskControlBlock, TaskId, TaskState};
 
