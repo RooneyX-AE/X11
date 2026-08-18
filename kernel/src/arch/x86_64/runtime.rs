@@ -106,9 +106,14 @@ impl KernelRuntime {
 
     /// Handles timer-triggered preemption at the interrupt-return boundary.
     /// The scheduler is mutated only after the target return path has been
-    /// classified, preventing a bootstrap task from being marked Running while
-    /// the CPU is still executing the interrupted task.
+    /// classified, preventing a task from being marked Running while the CPU
+    /// is still executing the interrupted task.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
+        // The interrupt path owns the current timer event. Consuming the
+        // pending flag here prevents service_pending_timer() from processing
+        // the same hardware tick a second time after the task switch returns.
+        let _ = super::idt::take_timer_pending();
+
         self.commit_interrupted_state()?;
         self.request_reschedule();
 
