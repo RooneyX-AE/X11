@@ -19,6 +19,7 @@ mod populate;
 mod scheduler_binding;
 mod stack;
 mod state;
+mod user_launch;
 
 pub use address_space::{AddressSpaceError, AddressSpaceId, AddressSpaceSpec};
 pub use address_space_builder::{build_address_space, AddressSpaceBuildError, BuiltAddressSpace, MappedStackPage};
@@ -35,3 +36,4 @@ pub use populate::{populate_image, ImagePageWriter, PopulateError};
 pub use scheduler_binding::{bind_and_ready, ProcessSchedulerBindError};
 pub use stack::{StackPlanError, UserStackPlan};
 pub use state::{ExitedProcess, ProcessState, ProcessTransitionError, ReadyProcess, RunningProcess};
+pub use user_launch::{UserLaunchError, UserLaunchPlan};
