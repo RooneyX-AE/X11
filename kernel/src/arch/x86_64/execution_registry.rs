@@ -12,11 +12,19 @@ use crate::scheduler::{ExecutionBinding, ExecutionHandle, TaskId};
 
 use super::context_switch::Context;
 use super::execution::{ExecutionError, X86ExecutionBinding};
+use super::interrupted_state::InterruptedState;
+use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RegistryInsertError {
     AlreadyBound,
     Allocation,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InterruptCaptureError {
+    TaskNotFound,
+    Execution(ExecutionError),
 }
 
 #[derive(Debug, Default)]
@@ -25,75 +33,62 @@ pub struct ExecutionRegistry {
 }
 
 impl ExecutionRegistry {
-    pub const fn new() -> Self {
-        Self { entries: Vec::new() }
-    }
+    pub const fn new() -> Self { Self { entries: Vec::new() } }
 
-    pub fn insert(
-        &mut self,
-        handle: ExecutionHandle,
-        entry: extern "C" fn() -> !,
-    ) -> Result<(), RegistryInsertError> {
+    pub fn insert(&mut self, handle: ExecutionHandle, entry: extern "C" fn() -> !) -> Result<(), RegistryInsertError> {
         let task_id = handle.task_id();
-        if self.get(task_id).is_some() {
-            return Err(RegistryInsertError::AlreadyBound);
-        }
-
+        if self.get(task_id).is_some() { return Err(RegistryInsertError::AlreadyBound); }
         let binding = Box::new(
             X86ExecutionBinding::new(task_id, entry)
                 .map_err(|_: ExecutionError| RegistryInsertError::Allocation)?,
         );
-
         if let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) {
             *slot = Some(binding);
             return Ok(());
         }
-
         self.entries.push(Some(binding));
         Ok(())
     }
 
     pub fn remove(&mut self, handle: ExecutionHandle) -> bool {
         let task_id = handle.task_id();
-        let Some(slot) = self
-            .entries
-            .iter_mut()
-            .find(|slot| slot.as_deref().is_some_and(|binding| binding.task_id() == task_id))
-        else {
-            return false;
-        };
+        let Some(slot) = self.entries.iter_mut().find(|slot| {
+            slot.as_deref().is_some_and(|binding| binding.task_id() == task_id)
+        }) else { return false; };
         *slot = None;
         true
     }
 
     pub fn get(&self, task_id: TaskId) -> Option<&X86ExecutionBinding> {
-        self.entries
-            .iter()
-            .filter_map(Option::as_deref)
-            .find(|binding| binding.task_id() == task_id)
+        self.entries.iter().filter_map(Option::as_deref).find(|binding| binding.task_id() == task_id)
     }
 
     pub fn get_mut(&mut self, task_id: TaskId) -> Option<&mut X86ExecutionBinding> {
-        self.entries
-            .iter_mut()
-            .filter_map(Option::as_deref_mut)
-            .find(|binding| binding.task_id() == task_id)
+        self.entries.iter_mut().filter_map(Option::as_deref_mut).find(|binding| binding.task_id() == task_id)
     }
 
-    /// Returns the mutable current context and immutable next context for two
-    /// distinct tasks without creating overlapping Rust mutable references.
-    pub fn context_pair_mut(
+    /// Copies CPU-interrupted state out of the temporary IRQ stack into the
+    /// execution binding owned by `task_id`.
+    ///
+    /// # Safety
+    /// The pointers must refer to the live frame produced for `task_id` by the
+    /// x86_64 interrupt entry stub and remain valid for the duration of the call.
+    pub unsafe fn capture_interrupted(
         &mut self,
-        current: TaskId,
-        next: TaskId,
-    ) -> Option<(&mut Context, &Context)> {
-        if current == next {
-            return None;
-        }
+        task_id: TaskId,
+        registers: *const SavedRegisters,
+        return_frame: InterruptReturnFrame,
+    ) -> Result<InterruptedState, InterruptCaptureError> {
+        let binding = self.get_mut(task_id).ok_or(InterruptCaptureError::TaskNotFound)?;
+        unsafe { binding.capture_interrupted(registers, return_frame) }
+            .map_err(InterruptCaptureError::Execution)?;
+        binding.interrupted().ok_or(InterruptCaptureError::Execution(ExecutionError::InvalidStack))
+    }
 
+    pub fn context_pair_mut(&mut self, current: TaskId, next: TaskId) -> Option<(&mut Context, &Context)> {
+        if current == next { return None; }
         let current_index = self.index_of(current)?;
         let next_index = self.index_of(next)?;
-
         if current_index < next_index {
             let (left, right) = self.entries.split_at_mut(next_index);
             let current_binding = left[current_index].as_deref_mut()?;
@@ -107,26 +102,14 @@ impl ExecutionRegistry {
         }
     }
 
-    pub fn contains(&self, handle: ExecutionHandle) -> bool {
-        self.get(handle.task_id()).is_some()
-    }
-
-    pub fn count(&self) -> usize {
-        self.entries.iter().filter(|entry| entry.is_some()).count()
-    }
-
+    pub fn contains(&self, handle: ExecutionHandle) -> bool { self.get(handle.task_id()).is_some() }
+    pub fn count(&self) -> usize { self.entries.iter().filter(|entry| entry.is_some()).count() }
     pub fn is_valid(&self, handle: ExecutionHandle) -> bool {
-        self.get(handle.task_id())
-            .map(|binding| binding.validate().is_ok())
-            .unwrap_or(false)
+        self.get(handle.task_id()).map(|binding| binding.validate().is_ok()).unwrap_or(false)
     }
 
     fn index_of(&self, task_id: TaskId) -> Option<usize> {
-        self.entries.iter().position(|entry| {
-            entry
-                .as_deref()
-                .is_some_and(|binding| binding.task_id() == task_id)
-        })
+        self.entries.iter().position(|entry| entry.as_deref().is_some_and(|binding| binding.task_id() == task_id))
     }
 }
 
@@ -135,9 +118,7 @@ mod tests {
     use super::{ExecutionRegistry, RegistryInsertError};
     use crate::scheduler::{ExecutionHandle, TaskId};
 
-    extern "C" fn never_returns() -> ! {
-        loop {}
-    }
+    extern "C" fn never_returns() -> ! { loop {} }
 
     #[test]
     fn registry_owns_one_execution_binding_per_handle() {
@@ -154,10 +135,7 @@ mod tests {
         let mut registry = ExecutionRegistry::new();
         let handle = ExecutionHandle::for_task(TaskId::new(1, 1));
         registry.insert(handle, never_returns).unwrap();
-        assert_eq!(
-            registry.insert(handle, never_returns),
-            Err(RegistryInsertError::AlreadyBound)
-        );
+        assert_eq!(registry.insert(handle, never_returns), Err(RegistryInsertError::AlreadyBound));
     }
 
     #[test]
@@ -186,12 +164,9 @@ mod tests {
         let first = ExecutionHandle::for_task(TaskId::new(4, 1));
         registry.insert(first, never_returns).unwrap();
         let before = registry.get(first.task_id()).unwrap() as *const _;
-
         for index in 5..128u32 {
-            let handle = ExecutionHandle::for_task(TaskId::new(index, 1));
-            registry.insert(handle, never_returns).unwrap();
+            registry.insert(ExecutionHandle::for_task(TaskId::new(index, 1)), never_returns).unwrap();
         }
-
         let after = registry.get(first.task_id()).unwrap() as *const _;
         assert_eq!(before, after);
     }
