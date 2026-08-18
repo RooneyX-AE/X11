@@ -12,6 +12,8 @@ use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use memory::{FrameAllocator, PageTableMapper};
 
+use arch::x86_64::page_table::X86PageTableMapper;
+
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::Dynamic);
@@ -71,7 +73,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // SAFETY: The bootloader established the complete physical-memory
         // direct mapping, and this mapper is initialized exactly once here.
         let mut mapper = unsafe {
-            arch::x86_64::page_table::X86PageTableMapper::new(
+            X86PageTableMapper::new(
                 mapping.offset(),
                 &mut frame_allocator,
                 memory::KERNEL_ADDRESS_SPACE,
