@@ -9,6 +9,7 @@ use x86_64::structures::paging::{
     FrameAllocator as X86FrameAllocator,
     Mapper,
     Page,
+    PageTable,
     PageTableFlags,
     PhysFrame,
     Size4KiB,
@@ -22,6 +23,7 @@ use crate::memory::{
     MappingError,
     MappingFlush,
     Page4K,
+    PageAccess,
     PageTableMapper,
     VirtRange,
 };
@@ -92,6 +94,41 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
             address_space,
         }
     }
+
+    fn mapped_flags(&self, virtual_address: u64) -> Option<PageTableFlags> {
+        if !self.address_space.contains(virtual_address) {
+            return None;
+        }
+
+        let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_address));
+        let mut table_ptr = self.inner.level_4_table() as *const PageTable;
+        let mut effective = PageTableFlags::PRESENT;
+        let indexes = [page.p4_index(), page.p3_index(), page.p2_index(), page.p1_index()];
+
+        for (level, index) in indexes.into_iter().enumerate() {
+            // SAFETY: `OffsetPageTable` was constructed from a valid root table
+            // and a bootloader-established complete physical mapping. Every
+            // next-level address comes from a PRESENT page-table entry, so the
+            // direct-map conversion below points at the corresponding table.
+            let table = unsafe { &*table_ptr };
+            let entry = &table[index];
+            let flags = entry.flags();
+            if !flags.contains(PageTableFlags::PRESENT) {
+                return None;
+            }
+
+            effective |= flags & (PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
+
+            if level == 3 || ((level == 1 || level == 2) && flags.contains(PageTableFlags::HUGE_PAGE)) {
+                return Some(effective);
+            }
+
+            let next_table = self.inner.phys_offset().as_u64().checked_add(entry.addr().as_u64())?;
+            table_ptr = next_table as *const PageTable;
+        }
+
+        Some(effective)
+    }
 }
 
 impl PageTableMapper for X86PageTableMapper<'_, '_> {
@@ -113,6 +150,10 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
             .map_err(|_| MappingError::InvalidPhysicalAddress)?;
         let target =
             Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
+        let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        if self.address_space.is_user() {
+            flags |= PageTableFlags::USER_ACCESSIBLE;
+        }
 
         // SAFETY: The target page is validated by the kernel address-space
         // policy, the backing frame is page-aligned, and the allocator only
@@ -121,7 +162,7 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
             self.inner.map_to(
                 target,
                 frame,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                flags,
                 &mut self.frame_allocator,
             )
         }
@@ -152,6 +193,18 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         self.inner
             .translate_addr(x86_64::VirtAddr::new(virtual_address))
             .map(|address| address.as_u64())
+    }
+
+    fn page_access(&self, virtual_address: u64) -> PageAccess {
+        let Some(flags) = self.mapped_flags(virtual_address) else {
+            return PageAccess::unmapped();
+        };
+        PageAccess {
+            mapped: flags.contains(PageTableFlags::PRESENT),
+            user: flags.contains(PageTableFlags::USER_ACCESSIBLE),
+            readable: flags.contains(PageTableFlags::PRESENT),
+            writable: flags.contains(PageTableFlags::WRITABLE),
+        }
     }
 
     fn address_space(&self) -> VirtRange {
