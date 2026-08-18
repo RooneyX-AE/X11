@@ -57,8 +57,9 @@ jobs:
           grep -q 'X11-OS: heap allocation verified' qemu.log
           grep -q 'X11-OS: kernel runtime bound to CPU0' qemu.log
           grep -q 'X11-OS: preemption proof tasks armed' qemu.log
-          grep -q 'X11-OS: interrupts enabled, entering scheduler' qemu.log
+          grep -q 'X11-OS: interrupts remain disabled until task B starts' qemu.log
           grep -q 'X11-OS: task A started' qemu.log
           grep -q 'X11-OS: task B started' qemu.log
+          grep -q 'X11-OS: interrupts enabled in task B' qemu.log
           grep -q 'X11-OS: task A resumed after timer preemption' qemu.log
           grep -q 'X11-OS: task B resumed through kernel iretq' qemu.log
