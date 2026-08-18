@@ -79,7 +79,6 @@ impl Scheduler {
         self.task(id).and_then(TaskControlBlock::execution)
     }
 
-    /// Roll back a task that has not entered the scheduler lifecycle yet.
     pub fn destroy_created(&mut self, id: TaskId) -> Result<ExecutionHandle, SchedulerError> {
         let index = id.index() as usize;
         let Some(slot) = self.tasks.get_mut(index) else {
@@ -109,6 +108,10 @@ impl Scheduler {
             return false;
         }
         self.ready.push(id)
+    }
+
+    pub fn next_ready(&self) -> Option<TaskId> {
+        self.ready.peek()
     }
 
     pub fn schedule_next(&mut self) -> DispatchDecision {
@@ -211,6 +214,7 @@ mod tests {
         let second = scheduler.create_task(Priority::DEFAULT);
         assert!(scheduler.make_ready(first));
         assert!(scheduler.make_ready(second));
+        assert_eq!(scheduler.next_ready(), Some(first));
         assert_eq!(scheduler.schedule_next().next, Some(first));
         assert_eq!(scheduler.state(first), Some(TaskState::Running));
         assert_eq!(scheduler.schedule_next().next, Some(second));
