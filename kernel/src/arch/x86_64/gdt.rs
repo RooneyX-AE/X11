@@ -39,12 +39,7 @@ pub fn init() {
         let mut table = GlobalDescriptorTable::new();
         let kernel_code = table.append(Descriptor::kernel_code_segment());
         let tss_selector = table.append(Descriptor::tss_segment(tss));
-
-        GdtState {
-            table,
-            kernel_code,
-            tss_selector,
-        }
+        GdtState { table, kernel_code, tss_selector }
     });
 
     state.table.load();
@@ -58,5 +53,5 @@ pub fn init() {
 }
 
 pub fn kernel_code_selector() -> Option<u16> {
-    GDT.get().map(|state| state.kernel_code.0)
+    GDT.get().map(|state| state.kernel_code.bits())
 }
