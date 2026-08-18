@@ -120,14 +120,17 @@ impl Scheduler {
         let Some(id) = self.current else {
             return false;
         };
-        let Some(task) = self.task_mut(id) else {
+        let index = id.index() as usize;
+        let Some(task) = self.tasks.get_mut(index).and_then(Option::as_mut) else {
             return false;
         };
-        let changed = task.transition(TaskState::Exited);
-        if changed {
-            self.current = None;
+        if task.id() != id || !task.transition(TaskState::Exited) {
+            return false;
         }
-        changed
+
+        self.tasks[index] = None;
+        self.current = None;
+        true
     }
 
     pub fn current(&self) -> Option<TaskId> {
@@ -192,6 +195,7 @@ mod tests {
 
         let replacement = scheduler.create_task(Priority::DEFAULT);
         assert_ne!(first, replacement);
+        assert_eq!(replacement.index(), first.index());
         assert_eq!(scheduler.state(first), None);
     }
 }
