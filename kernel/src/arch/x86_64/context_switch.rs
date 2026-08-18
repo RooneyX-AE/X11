@@ -4,8 +4,7 @@
 //! continuation address. Address-space state, FPU/SIMD state, interrupt state,
 //! and per-thread metadata are deliberately owned by higher layers.
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::arch::asm;
 
 /// Register state owned by the scheduler's kernel-thread context switch.
 #[repr(C)]
@@ -99,24 +98,21 @@ pub fn bootstrap_context(stack_top: u64, entry: extern "C" fn() -> !) -> Option<
     })
 }
 
-struct ContextCell(UnsafeCell<Context>);
-unsafe impl Sync for ContextCell {}
-
-struct StackCell(UnsafeCell<[u8; 16 * 1024]>);
-unsafe impl Sync for StackCell {}
-
-static BOOT_CONTEXT: ContextCell = ContextCell(UnsafeCell::new(Context::empty()));
-static TEST_CONTEXT: ContextCell = ContextCell(UnsafeCell::new(Context::empty()));
-static TEST_STACK: StackCell = StackCell(UnsafeCell::new([0; 16 * 1024]));
-static SELF_TEST_REACHED: AtomicU8 = AtomicU8::new(0);
+#[repr(C)]
+struct SmokeState {
+    boot: Context,
+    test: Context,
+    reached: bool,
+}
 
 extern "C" fn self_test_entry() -> ! {
-    SELF_TEST_REACHED.store(1, Ordering::Release);
-
-    // SAFETY: The self-test runs on one CPU with interrupts disabled. The
-    // context and stack are private to this bounded bootstrap test.
+    let state: *mut SmokeState;
+    // SAFETY: `self_test_entry` is reached only from `smoke_test`, which places
+    // a live `SmokeState` pointer in callee-saved `r12` before switching.
     unsafe {
-        switch(TEST_CONTEXT.0.get(), BOOT_CONTEXT.0.get());
+        asm!("mov {}, r12", out(reg) state, options(nomem, nostack, preserves_flags));
+        (*state).reached = true;
+        switch(&mut (*state).test, &(*state).boot);
     }
 
     loop {
@@ -128,27 +124,29 @@ extern "C" fn self_test_entry() -> ! {
 /// current continuation. This is a single-CPU bootstrap diagnostic, not the
 /// preemptive scheduler path.
 pub fn smoke_test() -> bool {
-    SELF_TEST_REACHED.store(0, Ordering::Release);
-
-    let stack_top = unsafe {
-        // SAFETY: The stack is a private bootstrap allocation and is not
-        // concurrently accessed during this single-CPU smoke test.
-        let stack = &*TEST_STACK.0.get();
-        stack.as_ptr().wrapping_add(stack.len()) as usize as u64
+    let mut state = SmokeState {
+        boot: Context::empty(),
+        test: Context::empty(),
+        reached: false,
     };
+    let mut stack = [0u8; 16 * 1024];
 
-    let Some(context) = bootstrap_context(stack_top, self_test_entry) else {
+    let stack_top = stack.as_mut_ptr() as usize + stack.len();
+    let Some(mut context) = bootstrap_context(stack_top as u64, self_test_entry) else {
         return false;
     };
 
+    context.r12 = (&mut state as *mut SmokeState) as usize as u64;
+    state.test = context;
+
+    // SAFETY: The stack and state are owned by this activation record, remain
+    // live across the voluntary switch, and interrupts are disabled by the
+    // caller. The callee-saved r12 register carries only this test-state pointer.
     unsafe {
-        // SAFETY: This is intentionally single-CPU and interrupts are disabled
-        // by the caller for the duration of the switch.
-        *TEST_CONTEXT.0.get() = context;
-        switch(BOOT_CONTEXT.0.get(), TEST_CONTEXT.0.get());
+        switch(&mut state.boot, &state.test);
     }
 
-    SELF_TEST_REACHED.load(Ordering::Acquire) == 1
+    state.reached
 }
 
 #[cfg(test)]
