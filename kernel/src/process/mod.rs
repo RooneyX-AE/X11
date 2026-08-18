@@ -9,9 +9,11 @@ mod image;
 mod load_plan;
 mod loader;
 mod populate;
+mod stack;
 
 pub use address_space::{AddressSpaceError, AddressSpaceId, AddressSpaceSpec};
 pub use image::{ElfError, ElfImage, LoadSegment};
 pub use load_plan::{LoadPlan, LoadPlanError, SegmentMapping};
 pub use loader::{map_load_plan, LoadError, LoadResult, MappedPage, MAX_MAPPED_PAGES};
 pub use populate::{populate_image, ImagePageWriter, PopulateError};
+pub use stack::{StackPlanError, UserStackPlan};
