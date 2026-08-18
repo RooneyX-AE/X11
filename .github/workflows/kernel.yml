@@ -13,6 +13,11 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly-2026-07-27
-          components: rust-src, llvm-tools-preview
+          components: rust-src, llvm-tools-preview, rustfmt
           targets: x86_64-unknown-none
-      - run: cargo build -p x11-os-boot
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check kernel
+        run: cargo check -p x11-os-kernel --target x86_64-unknown-none
+      - name: Build UEFI image
+        run: cargo build -p x11-os-boot
