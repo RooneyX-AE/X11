@@ -58,6 +58,28 @@ pub enum HeapInitError {
     AlreadyInitialized,
 }
 
+/// A consistent point-in-time heap usage snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeapStats {
+    capacity: usize,
+    used: usize,
+    free: usize,
+}
+
+impl HeapStats {
+    pub const fn capacity(self) -> usize {
+        self.capacity
+    }
+
+    pub const fn used(self) -> usize {
+        self.used
+    }
+
+    pub const fn free(self) -> usize {
+        self.free
+    }
+}
+
 /// Global allocator wrapper owned by the kernel heap subsystem.
 pub struct KernelHeap {
     heap: Mutex<Heap>,
@@ -92,12 +114,25 @@ impl KernelHeap {
         self.initialized.load(Ordering::Acquire)
     }
 
+    /// Returns usage statistics from one allocator lock acquisition.
+    ///
+    /// The snapshot is consistent with a single point in the allocator's
+    /// critical section, unlike separate `used()` and `free()` calls.
+    pub fn stats(&self) -> HeapStats {
+        let heap = self.heap.lock();
+        HeapStats {
+            capacity: heap.size(),
+            used: heap.used(),
+            free: heap.free(),
+        }
+    }
+
     pub fn used(&self) -> usize {
-        self.heap.lock().used()
+        self.stats().used()
     }
 
     pub fn free(&self) -> usize {
-        self.heap.lock().free()
+        self.stats().free()
     }
 }
 
@@ -157,5 +192,15 @@ mod tests {
     #[test]
     fn rejects_overflowing_range() {
         assert!(HeapRegion::new(u64::MAX - 0x1000, PAGE_SIZE_4K as usize).is_none());
+    }
+
+    #[test]
+    fn heap_stats_preserve_capacity_identity() {
+        let stats = super::HeapStats {
+            capacity: 4096,
+            used: 1024,
+            free: 3072,
+        };
+        assert_eq!(stats.used() + stats.free(), stats.capacity());
     }
 }
