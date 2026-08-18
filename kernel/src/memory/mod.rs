@@ -15,7 +15,9 @@ mod region;
 
 pub use address_space::{KERNEL_SPACE_START, USER_SPACE_START, VirtRange};
 pub use boot::MemorySummary;
-pub use frame::{EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE};
+pub use frame::{
+    ContiguousFrames, EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE,
+};
 pub use page::{Page4K, PAGE_SIZE_4K};
 pub use page_table::{KERNEL_ADDRESS_SPACE, MappingError, MappingFlush, PageTableMapper};
 pub use physical::PhysicalMemoryMapping;
