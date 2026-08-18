@@ -4,7 +4,7 @@
 //! pointer/length pair lies entirely inside the kernel's declared user range.
 //! Actual page-table/access checks belong to the active address-space layer.
 
-use super::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
+use super::{KERNEL_SPACE_START, USER_SPACE_START, VirtRange};
 use x11_os_abi::UserSlice;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,7 +22,10 @@ pub fn validate_slice(slice: UserSlice) -> Result<VirtRange, UserRangeError> {
         return Err(UserRangeError::NullPointer);
     }
 
-    let end = slice.ptr.checked_add(slice.len).ok_or(UserRangeError::AddressOverflow)?;
+    let end = slice
+        .ptr
+        .checked_add(slice.len)
+        .ok_or(UserRangeError::AddressOverflow)?;
     let range = VirtRange::new(slice.ptr, end).ok_or(UserRangeError::AddressOverflow)?;
     if range.start() < USER_SPACE_START || range.end() > KERNEL_SPACE_START {
         return Err(UserRangeError::OutsideUserSpace);
@@ -37,24 +40,43 @@ mod tests {
 
     #[test]
     fn accepts_normal_user_buffer() {
-        let range = validate_slice(UserSlice { ptr: USER_SPACE_START, len: 4096 }).unwrap();
+        let range = validate_slice(UserSlice {
+            ptr: USER_SPACE_START,
+            len: 4096,
+        })
+        .unwrap();
         assert_eq!(range.start(), USER_SPACE_START);
         assert_eq!(range.end(), USER_SPACE_START + 4096);
     }
 
     #[test]
     fn rejects_null_non_empty_buffer() {
-        assert_eq!(validate_slice(UserSlice { ptr: 0, len: 1 }), Err(UserRangeError::NullPointer));
+        assert_eq!(
+            validate_slice(UserSlice { ptr: 0, len: 1 }),
+            Err(UserRangeError::NullPointer)
+        );
     }
 
     #[test]
     fn rejects_overflow() {
-        assert_eq!(validate_slice(UserSlice { ptr: u64::MAX - 3, len: 8 }), Err(UserRangeError::AddressOverflow));
+        assert_eq!(
+            validate_slice(UserSlice {
+                ptr: u64::MAX - 3,
+                len: 8,
+            }),
+            Err(UserRangeError::AddressOverflow)
+        );
     }
 
     #[test]
     fn rejects_kernel_address() {
-        assert_eq!(validate_slice(UserSlice { ptr: KERNEL_SPACE_START, len: 1 }), Err(UserRangeError::OutsideUserSpace));
+        assert_eq!(
+            validate_slice(UserSlice {
+                ptr: KERNEL_SPACE_START,
+                len: 1,
+            }),
+            Err(UserRangeError::OutsideUserSpace)
+        );
     }
 
     #[test]
