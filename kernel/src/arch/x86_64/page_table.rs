@@ -47,6 +47,24 @@ impl X86FrameAllocator<Size4KiB> for FrameAllocatorAdapter<'_, '_> {
     }
 }
 
+/// Converts an architecture mapping error into the kernel mapping contract.
+fn map_to_error(error: MapToError<Size4KiB>) -> MappingError {
+    match error {
+        MapToError::FrameAllocationFailed => MappingError::FrameAllocationFailed,
+        MapToError::ParentEntryHugePage => MappingError::ParentEntryHugePage,
+        MapToError::PageAlreadyMapped(_) => MappingError::AlreadyMapped,
+    }
+}
+
+/// Converts an architecture unmapping error into the kernel mapping contract.
+fn unmap_error(error: UnmapError) -> MappingError {
+    match error {
+        UnmapError::ParentEntryHugePage => MappingError::ParentEntryHugePage,
+        UnmapError::PageNotMapped => MappingError::NotMapped,
+        UnmapError::InvalidFrameAddress(_) => MappingError::InvalidMappedFrame,
+    }
+}
+
 /// Page-table adapter backed by the active x86_64 page table.
 pub struct X86PageTableMapper<'allocator, 'regions> {
     inner: x86_64::structures::paging::OffsetPageTable<'static>,
@@ -96,32 +114,18 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         let target =
             Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
 
-        if self.inner.translate(target.start_address()).is_ok() {
-            return Err(MappingError::AlreadyMapped);
-        }
-
         // SAFETY: The target page is validated by the kernel address-space
         // policy, the backing frame is page-aligned, and the allocator only
         // yields usable 4 KiB frames.
-        let result = unsafe {
+        let flush = unsafe {
             self.inner.map_to(
                 target,
                 frame,
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                 &mut self.frame_allocator,
             )
-        };
-
-        let flush = match result {
-            Ok(flush) => flush,
-            Err(MapToError::FrameAllocationFailed) => {
-                return Err(MappingError::FrameAllocationFailed)
-            }
-            Err(MapToError::ParentEntryHugePage) => {
-                return Err(MappingError::ParentEntryHugePage)
-            }
-            Err(MapToError::PageAlreadyMapped(_)) => return Err(MappingError::AlreadyMapped),
-        };
+        }
+        .map_err(map_to_error)?;
 
         Ok(X86Flush(flush))
     }
@@ -136,19 +140,7 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
 
         let target =
             Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
-        let result = self.inner.unmap(target);
-
-        let (frame, flush) = match result {
-            Ok(result) => result,
-            Err(UnmapError::PageNotMapped) => return Err(MappingError::NotMapped),
-            Err(UnmapError::ParentEntryHugePage) => {
-                return Err(MappingError::ParentEntryHugePage)
-            }
-            Err(UnmapError::InvalidFrameAddress(_)) => {
-                return Err(MappingError::InvalidMappedFrame)
-            }
-        };
-
+        let (frame, flush) = self.inner.unmap(target).map_err(unmap_error)?;
         Ok((frame.start_address().as_u64(), X86Flush(flush)))
     }
 
@@ -164,5 +156,48 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
 
     fn address_space(&self) -> VirtRange {
         self.address_space
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use x86_64::structures::paging::mapper::{MapToError, UnmapError};
+    use x86_64::PhysAddr;
+
+    use super::{map_to_error, unmap_error};
+    use crate::memory::MappingError;
+
+    #[test]
+    fn map_error_mapping_preserves_semantics() {
+        assert_eq!(
+            map_to_error(MapToError::FrameAllocationFailed),
+            MappingError::FrameAllocationFailed
+        );
+        assert_eq!(
+            map_to_error(MapToError::ParentEntryHugePage),
+            MappingError::ParentEntryHugePage
+        );
+        assert_eq!(
+            map_to_error(MapToError::PageAlreadyMapped(
+                x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(0x1000))
+            )),
+            MappingError::AlreadyMapped
+        );
+    }
+
+    #[test]
+    fn unmap_error_mapping_preserves_semantics() {
+        assert_eq!(
+            unmap_error(UnmapError::ParentEntryHugePage),
+            MappingError::ParentEntryHugePage
+        );
+        assert_eq!(
+            unmap_error(UnmapError::PageNotMapped),
+            MappingError::NotMapped
+        );
+        assert_eq!(
+            unmap_error(UnmapError::InvalidFrameAddress(PhysAddr::new(0x1234))),
+            MappingError::InvalidMappedFrame
+        );
     }
 }
