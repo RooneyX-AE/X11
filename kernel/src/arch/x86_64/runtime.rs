@@ -12,6 +12,7 @@ use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
 use super::context_switch::Context;
 use super::cpu_local::{self, RuntimeBindingError};
 use super::execution::ExecutionError;
+use super::interrupted_state::KernelPreemptState;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::preemption_plan::PreemptionPlan;
 use super::yield_switch::{self, YieldError};
@@ -29,6 +30,12 @@ pub enum RuntimeError {
 
 impl From<YieldError> for RuntimeError {
     fn from(error: YieldError) -> Self { Self::Yield(error) }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptPreemption {
+    ResumeCurrent,
+    ReturnToKernel(KernelPreemptState),
 }
 
 #[derive(Debug)]
@@ -111,6 +118,48 @@ impl KernelRuntime {
             .ok_or(RuntimeError::MissingExecutionPair)
     }
 
+    /// Handles a timer-triggered preemption while still in the interrupt return
+    /// boundary. Bootstrap targets are deliberately deferred: committing that
+    /// scheduler transition before an iret-capable context exists would leave
+    /// the scheduler claiming task B is Running while the CPU is still in A.
+    ///
+    /// # Safety
+    /// The caller must be executing on the owning CPU with interrupts disabled,
+    /// after the timer entry has captured the current task's interrupted state.
+    pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
+        self.commit_interrupted_state()?;
+        self.request_reschedule();
+
+        if !self.preemption.is_enabled() {
+            return Ok(InterruptPreemption::ResumeCurrent);
+        }
+
+        let candidate = self.manager.scheduler.next_ready();
+        let Some(candidate) = candidate else {
+            return Ok(InterruptPreemption::ResumeCurrent);
+        };
+
+        let Some(plan) = self.manager.executions.preemption_plan(candidate) else {
+            return Err(RuntimeError::MissingExecutionPair);
+        };
+
+        let state = match plan {
+            PreemptionPlan::Bootstrap { .. } => {
+                self.request_reschedule();
+                return Ok(InterruptPreemption::ResumeCurrent);
+            }
+            PreemptionPlan::IretKernel { state, .. } => state,
+        };
+
+        let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
+        if decision.next != Some(candidate) {
+            return Err(RuntimeError::MissingExecutionPair);
+        }
+
+        unsafe { cpu_local::local().set_current_task(Some(candidate)); }
+        Ok(InterruptPreemption::ReturnToKernel(state))
+    }
+
     pub fn service_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
         let woken = self.manager.expire_sleepers(now);
         self.request_reschedule();
@@ -183,7 +232,7 @@ impl Drop for PreemptionDisableGuard<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KernelRuntime, RuntimeError};
+    use super::{InterruptPreemption, KernelRuntime, RuntimeError};
     use crate::arch::x86_64::cpu_local::CpuLocalState;
     use crate::arch::x86_64::preemption_plan::PreemptionPlan;
     use crate::scheduler::{Priority, TaskState};
@@ -226,5 +275,18 @@ mod tests {
         let mut runtime = KernelRuntime::new();
         let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
         assert!(matches!(runtime.prepare_preemption().unwrap(), PreemptionPlan::Bootstrap { task_id } if task_id == task));
+    }
+
+    #[test]
+    fn timer_preemption_defers_bootstrap_target_without_mutating_scheduler() {
+        let mut runtime = KernelRuntime::new();
+        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
+        unsafe { runtime.manager.scheduler.schedule_next(); }
+        assert_eq!(runtime.manager.scheduler.current(), Some(task));
+        let result = unsafe { runtime.handle_timer_preemption() }.unwrap();
+        assert_eq!(result, InterruptPreemption::ResumeCurrent);
+        assert_eq!(runtime.manager.scheduler.current(), Some(task));
+        assert_eq!(runtime.manager.scheduler.state(task), Some(TaskState::Running));
+        assert!(runtime.is_reschedule_pending());
     }
 }
