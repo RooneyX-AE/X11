@@ -5,10 +5,6 @@
 //! scheduler policy.
 
 /// Monotonic kernel tick value.
-///
-/// A tick source must never move backwards. The unit is intentionally left
-/// unspecified here; platform code chooses the frequency and documents it at
-/// the implementation boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub struct Tick(u64);
 
@@ -32,15 +28,11 @@ impl Tick {
 pub trait ClockSource {
     type Error;
 
-    /// Returns a monotonic tick value.
-    fn now(&self) -> Result<Tick, Self::Error>;
+    /// Samples the current monotonic tick.
+    fn now(&mut self) -> Result<Tick, Self::Error>;
 }
 
 /// Minimal timer programming contract.
-///
-/// The timer backend is responsible only for arranging a future wakeup. It
-/// does not decide which task runs after the interrupt; that remains scheduler
-/// policy.
 pub trait TimerSource {
     type Error;
 
@@ -51,12 +43,7 @@ pub trait TimerSource {
     fn disarm(&mut self) -> Result<(), Self::Error>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TimeError {
-    ClockWentBackwards,
-}
-
-/// Validates monotonicity while adapting any raw clock source to `Tick`.
+/// Validates that a clock source never moves backwards.
 #[derive(Debug)]
 pub struct MonotonicClock<C> {
     source: C,
@@ -65,10 +52,7 @@ pub struct MonotonicClock<C> {
 
 impl<C> MonotonicClock<C> {
     pub const fn new(source: C) -> Self {
-        Self {
-            source,
-            last: Tick::ZERO,
-        }
+        Self { source, last: Tick::ZERO }
     }
 
     pub const fn last(&self) -> Tick {
@@ -82,8 +66,13 @@ where
 {
     type Error = MonotonicClockError<C::Error>;
 
-    fn now(&self) -> Result<Tick, Self::Error> {
-        self.source.now().map_err(MonotonicClockError::Source)
+    fn now(&mut self) -> Result<Tick, Self::Error> {
+        let tick = self.source.now().map_err(MonotonicClockError::Source)?;
+        if tick < self.last {
+            return Err(MonotonicClockError::ClockWentBackwards);
+        }
+        self.last = tick;
+        Ok(tick)
     }
 }
 
@@ -95,15 +84,20 @@ pub enum MonotonicClockError<E> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClockSource, MonotonicClock, Tick};
+    use super::{ClockSource, MonotonicClock, MonotonicClockError, Tick};
 
-    struct FixedClock(Tick);
+    struct SequenceClock {
+        values: &'static [u64],
+        index: usize,
+    }
 
-    impl ClockSource for FixedClock {
+    impl ClockSource for SequenceClock {
         type Error = core::convert::Infallible;
 
-        fn now(&self) -> Result<Tick, Self::Error> {
-            Ok(self.0)
+        fn now(&mut self) -> Result<Tick, Self::Error> {
+            let value = self.values[self.index];
+            self.index += 1;
+            Ok(Tick::new(value))
         }
     }
 
@@ -114,9 +108,19 @@ mod tests {
     }
 
     #[test]
-    fn monotonic_clock_preserves_source_value() {
-        let clock = MonotonicClock::new(FixedClock(Tick::new(42)));
+    fn monotonic_clock_updates_last() {
+        let mut clock = MonotonicClock::new(SequenceClock { values: &[42, 43], index: 0 });
         assert_eq!(clock.now().unwrap(), Tick::new(42));
-        assert_eq!(clock.last(), Tick::ZERO);
+        assert_eq!(clock.last(), Tick::new(42));
+        assert_eq!(clock.now().unwrap(), Tick::new(43));
+        assert_eq!(clock.last(), Tick::new(43));
+    }
+
+    #[test]
+    fn backwards_clock_is_rejected() {
+        let mut clock = MonotonicClock::new(SequenceClock { values: &[10, 9], index: 0 });
+        assert_eq!(clock.now().unwrap(), Tick::new(10));
+        assert_eq!(clock.now(), Err(MonotonicClockError::ClockWentBackwards));
+        assert_eq!(clock.last(), Tick::new(10));
     }
 }
