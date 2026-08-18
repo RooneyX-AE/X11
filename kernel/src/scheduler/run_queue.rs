@@ -26,6 +26,10 @@ impl RunQueue {
         true
     }
 
+    pub fn peek(&self) -> Option<TaskId> {
+        self.queue.front().copied()
+    }
+
     pub fn pop(&mut self) -> Option<TaskId> {
         self.queue.pop_front()
     }
@@ -75,6 +79,17 @@ mod tests {
         assert!(queue.push(b));
         assert_eq!(queue.pop(), Some(a));
         assert_eq!(queue.pop(), Some(b));
+    }
+
+    #[test]
+    fn peek_does_not_mutate_queue() {
+        let mut queue = RunQueue::new();
+        let a = TaskId::new(0, 1);
+        let b = TaskId::new(1, 1);
+        queue.push(a);
+        queue.push(b);
+        assert_eq!(queue.peek(), Some(a));
+        assert_eq!(queue.snapshot(), alloc::vec![a, b]);
     }
 
     #[test]
