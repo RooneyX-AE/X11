@@ -18,8 +18,9 @@ jobs:
           components: rust-src, llvm-tools-preview, rustfmt
           rustflags: ""
       - name: Check formatting
-        continue-on-error: true
         run: cargo fmt --all -- --check
+      - name: Run host-side kernel tests
+        run: cargo test -p x11-os-kernel --lib
       - name: Check kernel binary
         shell: bash
         env:
