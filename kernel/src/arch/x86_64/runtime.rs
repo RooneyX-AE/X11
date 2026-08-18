@@ -59,7 +59,8 @@ impl KernelRuntime {
     pub fn boot_context_mut(&mut self) -> &mut Context { &mut self.boot_context }
 
     pub unsafe fn bind_cpu(&mut self) -> Result<(), RuntimeError> {
-        cpu_local::local().bind_runtime(self as *mut Self as *mut ()).map_err(RuntimeError::CpuBinding)
+        let result = unsafe { cpu_local::local().bind_runtime(self as *mut Self as *mut ()) };
+        result.map_err(RuntimeError::CpuBinding)
     }
 
     pub fn request_reschedule(&self) { self.reschedule.request(); }
