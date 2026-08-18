@@ -11,7 +11,7 @@ mod task;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-pub use execution::{ExecutionBinding, ExecutionState};
+pub use execution::{ExecutionBinding, ExecutionHandle, ExecutionState};
 pub use run_queue::RunQueue;
 pub use task::{Priority, TaskControlBlock, TaskId, TaskState};
 
@@ -61,6 +61,14 @@ impl Scheduler {
             .push(Some(Box::new(TaskControlBlock::new(id, priority))));
         self.generations.push(generation);
         id
+    }
+
+    pub fn attach_execution(&mut self, id: TaskId) -> Option<ExecutionHandle> {
+        self.task_mut(id).map(TaskControlBlock::attach_execution)
+    }
+
+    pub fn execution(&self, id: TaskId) -> Option<ExecutionHandle> {
+        self.task(id).and_then(TaskControlBlock::execution)
     }
 
     pub fn make_ready(&mut self, id: TaskId) -> bool {
@@ -132,6 +140,7 @@ impl Scheduler {
             return false;
         }
 
+        let _ = task.detach_execution();
         self.tasks[index] = None;
         self.current = None;
         true
@@ -195,6 +204,14 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_tracks_execution_handle() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        let handle = scheduler.attach_execution(task).expect("task must exist");
+        assert_eq!(scheduler.execution(task), Some(handle));
+    }
+
+    #[test]
     fn stale_task_ids_are_rejected_after_slot_reuse() {
         let mut scheduler = Scheduler::new();
         let first = scheduler.create_task(Priority::DEFAULT);
@@ -206,6 +223,7 @@ mod tests {
         assert_ne!(first, replacement);
         assert_eq!(replacement.index(), first.index());
         assert_eq!(scheduler.state(first), None);
+        assert_eq!(scheduler.execution(first), None);
     }
 
     #[test]
