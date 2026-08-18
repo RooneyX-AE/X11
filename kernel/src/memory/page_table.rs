@@ -1,9 +1,8 @@
-//! Page-table mapping contract.
+//! Kernel-facing page-table mapping contract.
 //!
-//! This module owns the kernel-facing mapping abstraction while leaving the
-//! actual page-table implementation behind the architecture boundary. The
-//! first implementation will use x86_64's mapper types without exposing them
-//! to higher-level memory consumers.
+//! Higher-level memory code depends on this trait rather than on a specific
+//! architecture crate. TLB flushes remain explicit so callers cannot mistake
+//! a pending hardware update for a completed mapping operation.
 
 use super::page::Page4K;
 use super::virtual::VirtRange;
@@ -11,9 +10,9 @@ use super::virtual::VirtRange;
 /// Errors returned while changing a virtual mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MappingError {
-    /// The requested virtual address is not page aligned.
+    /// The requested address is not page aligned.
     Unaligned,
-    /// The address range is outside the supported virtual-address policy.
+    /// The address is outside the supported virtual-address policy.
     OutsideAddressSpace,
     /// A mapping already exists at the requested virtual address.
     AlreadyMapped,
@@ -21,17 +20,32 @@ pub enum MappingError {
     NotMapped,
     /// The backing physical address is invalid or unavailable.
     InvalidPhysicalAddress,
-    /// The hardware page-table operation failed.
+    /// The architecture backend rejected the operation.
     BackendFailure,
 }
 
+/// A single mapping change that still requires a hardware TLB update.
+///
+/// The architecture backend owns the exact flush mechanism. This token makes
+/// the completion step explicit at the kernel API boundary.
+pub trait MappingFlush {
+    /// Applies the pending translation-cache invalidation.
+    fn flush(self);
+}
+
+/// Result of mapping one page.
+pub type MapResult<F> = Result<F, MappingError>;
+
 /// Kernel-facing interface for page-sized mappings.
 pub trait PageTableMapper {
-    /// Maps one virtual page to one physical frame.
-    fn map_page(&mut self, page: Page4K, physical_address: u64) -> Result<(), MappingError>;
+    type Flush: MappingFlush;
 
-    /// Removes one virtual-page mapping and returns its physical address.
-    fn unmap_page(&mut self, page: Page4K) -> Result<u64, MappingError>;
+    /// Maps one virtual page to one physical frame.
+    fn map_page(&mut self, page: Page4K, physical_address: u64) -> MapResult<Self::Flush>;
+
+    /// Removes one virtual-page mapping and returns its physical address plus
+    /// the flush operation required to make the CPU observe the change.
+    fn unmap_page(&mut self, page: Page4K) -> MapResult<(u64, Self::Flush)>;
 
     /// Translates a virtual address into its backing physical address.
     fn translate(&self, virtual_address: u64) -> Option<u64>;
@@ -40,7 +54,7 @@ pub trait PageTableMapper {
     fn address_space(&self) -> VirtRange;
 }
 
-/// The initial kernel virtual address space policy.
+/// Initial kernel-only virtual address space policy.
 pub const KERNEL_ADDRESS_SPACE: VirtRange = match VirtRange::new(
     super::virtual::KERNEL_SPACE_START,
     u64::MAX,
