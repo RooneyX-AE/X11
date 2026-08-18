@@ -33,13 +33,13 @@ pub fn init() {
     // TSS and IST stack are initialized exactly once and never moved afterward.
     unsafe {
         let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
-        TSS.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+        (*core::ptr::addr_of_mut!(TSS)).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
             stack_start + DOUBLE_FAULT_STACK_SIZE as u64;
     }
 
     let state = GDT.call_once(|| {
         // SAFETY: TSS has been initialized above and is never moved afterward.
-        let tss = unsafe { &*(&raw const TSS) };
+        let tss = unsafe { &*core::ptr::addr_of!(TSS) };
         let mut table = GlobalDescriptorTable::new();
         let kernel_code = table.append(Descriptor::kernel_code_segment());
         let tss = table.append(Descriptor::tss_segment(tss));
