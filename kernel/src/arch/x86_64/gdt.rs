@@ -16,39 +16,41 @@ const DOUBLE_FAULT_STACK_SIZE: usize = 32 * 1024;
 struct AlignedStack([u8; DOUBLE_FAULT_STACK_SIZE]);
 
 static DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static TSS: Once<TaskStateSegment> = Once::new();
 
 struct GdtState {
     table: GlobalDescriptorTable,
     kernel_code: SegmentSelector,
     tss_selector: SegmentSelector,
-    _tss: TaskStateSegment,
 }
 
 static GDT: Once<GdtState> = Once::new();
 
 pub fn init() {
-    let state = GDT.call_once(|| {
+    let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
         let stack_start = x86_64::VirtAddr::from_ptr(core::ptr::addr_of!(DOUBLE_FAULT_STACK));
         let stack_end = stack_start + DOUBLE_FAULT_STACK_SIZE as u64;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
+        tss
+    });
 
+    let state = GDT.call_once(|| {
         let mut table = GlobalDescriptorTable::new();
         let kernel_code = table.append(Descriptor::kernel_code_segment());
-        let tss_selector = table.append(Descriptor::tss_segment(&tss));
+        let tss_selector = table.append(Descriptor::tss_segment(tss));
 
         GdtState {
             table,
             kernel_code,
             tss_selector,
-            _tss: tss,
         }
     });
 
     state.table.load();
 
     // SAFETY: selectors reference descriptors stored in the permanently
-    // initialized GDT above. The TSS outlives the loaded selector.
+    // initialized GDT and TSS above. Both live for the kernel lifetime.
     unsafe {
         CS::set_reg(state.kernel_code);
         load_tss(state.tss_selector);
