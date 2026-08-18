@@ -146,7 +146,7 @@ unsafe impl GlobalAlloc for KernelHeap {
             .lock()
             .allocate_first_fit(layout)
             .map(NonNull::as_ptr)
-            .unwrap_or_else(null_mut)
+            .unwrap_or_else(|_| null_mut())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
