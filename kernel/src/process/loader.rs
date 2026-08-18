@@ -1,8 +1,8 @@
 //! Transactional userspace segment mapper.
 //!
-//! This layer allocates physical frames and installs page mappings, but does
-//! not copy ELF bytes or enter ring 3. Any mapping failure rolls back every
-//! page installed by this transaction.
+//! The early frame allocator is monotonic, so a failed load can roll back
+//! virtual mappings but cannot return physical frames. That ownership rule is
+//! explicit here rather than pretending this is a fully reclaiming transaction.
 
 use crate::memory::{EarlyFrameAllocator, MappingError, MappingFlags, Page4K, PageTableMapper, PAGE_SIZE_4K};
 
@@ -20,9 +20,22 @@ pub enum LoadError {
 const MAX_MAPPED_PAGES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MappedPage {
+    pub virtual_address: u64,
+    pub physical_address: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoadResult {
     pub mapped_pages: usize,
     pub entry: u64,
+    pages: [Option<MappedPage>; MAX_MAPPED_PAGES],
+}
+
+impl LoadResult {
+    pub fn page(self, index: usize) -> Option<MappedPage> {
+        if index >= self.mapped_pages { None } else { self.pages[index] }
+    }
 }
 
 pub fn map_load_plan<M: PageTableMapper>(
@@ -30,7 +43,7 @@ pub fn map_load_plan<M: PageTableMapper>(
     allocator: &mut EarlyFrameAllocator<'_>,
     plan: LoadPlan,
 ) -> Result<LoadResult, LoadError> {
-    let mut mapped = [None; MAX_MAPPED_PAGES];
+    let mut pages = [None; MAX_MAPPED_PAGES];
     let mut count = 0usize;
 
     for index in 0..plan.count() {
@@ -40,48 +53,53 @@ pub fn map_load_plan<M: PageTableMapper>(
         let mut address = range.start();
         while address < range.end() {
             if count == MAX_MAPPED_PAGES {
-                rollback(mapper, &mapped, count)?;
+                rollback(mapper, &pages, count)?;
                 return Err(LoadError::TooManyPages);
             }
 
             let page = match Page4K::from_start_address(address) {
                 Some(page) => page,
                 None => {
-                    rollback(mapper, &mapped, count)?;
+                    rollback(mapper, &pages, count)?;
                     return Err(LoadError::InvalidPage);
                 }
             };
             let frame = match allocator.allocate_frame() {
                 Some(frame) => frame,
                 None => {
-                    rollback(mapper, &mapped, count)?;
+                    rollback(mapper, &pages, count)?;
                     return Err(LoadError::Mapping(MappingError::FrameAllocationFailed));
                 }
             };
+            let physical_address = frame.start_address();
 
-            match mapper.map_page(page, frame.start_address(), flags) {
+            match mapper.map_page(page, physical_address, flags) {
                 Ok(flush) => flush.flush(),
                 Err(error) => {
-                    rollback(mapper, &mapped, count)?;
+                    rollback(mapper, &pages, count)?;
                     return Err(LoadError::Mapping(error));
                 }
             }
 
-            mapped[count] = Some(page);
+            pages[count] = Some(MappedPage { virtual_address: address, physical_address });
             count += 1;
-            address = address.checked_add(PAGE_SIZE_4K).ok_or_else(|| {
-                let _ = rollback(mapper, &mapped, count);
-                LoadError::InvalidPage
-            })?;
+            address = match address.checked_add(PAGE_SIZE_4K) {
+                Some(value) => value,
+                None => {
+                    rollback(mapper, &pages, count)?;
+                    return Err(LoadError::InvalidPage);
+                }
+            };
         }
     }
 
-    Ok(LoadResult { mapped_pages: count, entry: plan.entry() })
+    Ok(LoadResult { mapped_pages: count, entry: plan.entry(), pages })
 }
 
-fn rollback<M: PageTableMapper>(mapper: &mut M, mapped: &[Option<Page4K>; MAX_MAPPED_PAGES], count: usize) -> Result<(), LoadError> {
+fn rollback<M: PageTableMapper>(mapper: &mut M, pages: &[Option<MappedPage>; MAX_MAPPED_PAGES], count: usize) -> Result<(), LoadError> {
     for index in (0..count).rev() {
-        let Some(page) = mapped[index] else { continue; };
+        let Some(mapped) = pages[index] else { continue; };
+        let page = Page4K::from_start_address(mapped.virtual_address).ok_or(LoadError::InvalidPage)?;
         let (_, flush) = mapper.unmap_page(page).map_err(|_| LoadError::RollbackFailed)?;
         flush.flush();
     }
