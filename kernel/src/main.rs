@@ -7,6 +7,7 @@ extern crate alloc;
 
 mod arch;
 mod heap;
+mod hello;
 mod interrupt_controller;
 mod interrupts;
 mod memory;
@@ -61,6 +62,7 @@ entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
     serial::write_str("X11-OS: kernel entry reached\r\n");
+    hello::run();
 
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
