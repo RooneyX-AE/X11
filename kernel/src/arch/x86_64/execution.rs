@@ -62,17 +62,19 @@ impl X86ExecutionBinding {
     /// Copies the interrupted CPU state out of the transient IRQ stack.
     ///
     /// # Safety
-    /// `registers` and `return_frame` must point at the live state created by
-    /// the architecture interrupt entry stub for this exact task.
+    /// `registers`, `return_frame`, and `resume_rsp` must describe the live
+    /// state created by the architecture interrupt entry stub for this exact
+    /// task.
     pub unsafe fn capture_interrupted(
         &mut self,
         registers: *const SavedRegisters,
         return_frame: InterruptReturnFrame,
+        resume_rsp: u64,
     ) -> Result<(), ExecutionError> {
         if self.interrupted.is_some() {
             return Err(ExecutionError::InterruptedStateAlreadyPresent);
         }
-        let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
+        let snapshot = unsafe { InterruptedState::capture(registers, return_frame, resume_rsp) };
         self.install_interrupted(snapshot)
     }
 
@@ -129,7 +131,7 @@ mod tests {
         raw[1] = 0x10;
         raw[2] = 0x202;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        unsafe { super::InterruptedState::capture(&registers, frame) }
+        unsafe { super::InterruptedState::capture(&registers, frame, 0x8000) }
     }
 
     #[test]
