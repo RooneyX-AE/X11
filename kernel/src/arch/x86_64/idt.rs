@@ -30,7 +30,7 @@ pub fn init() {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
-            idt[TIMER_VECTOR as usize].set_handler_addr(VirtAddr::new(
+            idt[TIMER_VECTOR].set_handler_addr(VirtAddr::new(
                 interrupt_entry::timer_entry as *const () as usize as u64,
             ));
         }
@@ -48,8 +48,8 @@ extern "x86-interrupt" fn page_fault_handler(
     _stack_frame: InterruptStackFrame,
     _error_code: PageFaultErrorCode,
 ) {
-    let address = Cr2::read();
-    LAST_PAGE_FAULT_ADDRESS.store(address.as_u64() as usize, Ordering::Release);
+    let address = Cr2::read_raw();
+    LAST_PAGE_FAULT_ADDRESS.store(address as usize, Ordering::Release);
     crate::serial::write_str("[x11-os] page fault\n");
 
     loop {
