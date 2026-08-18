@@ -1,8 +1,9 @@
 //! Single-CPU kernel runtime owner.
 //!
-//! The runtime owns the scheduler, execution registry, and boot continuation.
-//! Tasks never access these components through global mutable state. The runtime
-//! is boxed so its address remains stable while a spawned task is executing.
+//! The runtime owns the scheduler, execution registry, sleep queue, and boot
+//! continuation. Tasks never access these components through global mutable
+//! state. The runtime is boxed so its address remains stable while a spawned
+//! task is executing.
 
 use alloc::boxed::Box;
 
@@ -71,6 +72,12 @@ impl KernelRuntime {
     pub fn prepare_run(&mut self) -> Result<TaskId, RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         decision.next.ok_or(RuntimeError::NoRunnableTask)
+    }
+
+    /// Service one deferred timer event without performing a context switch in
+    /// interrupt context. The caller supplies a monotonic clock sample.
+    pub fn service_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
+        Ok(self.manager.expire_sleepers(now))
     }
 
     /// Select the next runnable task and perform the architecture-specific
@@ -152,5 +159,17 @@ mod tests {
         assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Running));
         assert_eq!(runtime.prepare_run(), Err(RuntimeError::NoRunnableTask));
         assert_eq!(runtime.manager().scheduler.current(), Some(task));
+    }
+
+    #[test]
+    fn timer_service_expires_sleepers_without_switching() {
+        let mut runtime = KernelRuntime::new();
+        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
+        assert_eq!(runtime.prepare_run().unwrap(), task);
+        assert_eq!(runtime.manager_mut().sleep_current_until(100).unwrap(), task);
+        assert_eq!(runtime.service_timer(99).unwrap(), 0);
+        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(runtime.service_timer(100).unwrap(), 1);
+        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Ready));
     }
 }
