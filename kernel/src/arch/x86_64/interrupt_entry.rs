@@ -1,8 +1,9 @@
 //! x86_64 interrupt-entry register frame.
 //!
 //! The timer entry stub owns the exact assembly/Rust ABI. It saves all
-//! general-purpose registers, preserves the CPU-owned return frame, aligns the
-//! stack for the Rust call, and returns with `iretq` without switching tasks.
+//! general-purpose registers, captures the interrupted RSP before touching the
+//! stack, preserves the CPU-owned return frame, aligns the stack for Rust, and
+//! returns with `iretq` without switching tasks.
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -66,22 +67,21 @@ const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 extern "C" fn timer_entry_rust(
     registers: *mut SavedRegisters,
     return_frame: *mut u64,
+    resume_rsp: u64,
 ) {
     let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
     let _ = unsafe {
-        crate::arch::x86_64::cpu_local::local().capture_interrupted(registers, frame)
+        crate::arch::x86_64::cpu_local::local()
+            .capture_interrupted(registers, frame, resume_rsp)
     };
     crate::arch::x86_64::idt::record_timer_interrupt();
 }
 
 /// Raw timer-entry ABI.
-///
-/// The interrupted stack may have arbitrary alignment, so the stub realigns a
-/// temporary call stack and restores the original saved-register pointer before
-/// returning. The CPU return frame is never moved.
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_entry() {
     core::arch::naked_asm!(
+        "mov rdx, rsp",
         "push r15",
         "push r14",
         "push r13",
@@ -103,6 +103,7 @@ pub unsafe extern "C" fn timer_entry() {
         "mov [rsp], rax",
         "mov rdi, rax",
         "lea rsi, [rax + 120]",
+        "mov rdx, [rax + 24]",
         "call {rust_hook}",
         "mov rax, [rsp]",
         "mov rsp, rax",
