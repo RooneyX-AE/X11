@@ -12,6 +12,7 @@ mod interrupt_controller;
 mod interrupts;
 mod memory;
 mod process;
+mod ramdisk;
 mod scheduler;
 mod serial;
 mod syscall;
@@ -27,7 +28,6 @@ use timer::TimerDevice;
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::Dynamic);
-    config
 };
 
 pub static PREEMPT_IRET_RETURNED: AtomicBool = AtomicBool::new(false);
@@ -66,6 +66,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     hello::print();
 
     serial::write_str("X11-OS: kernel entry reached\r\n");
+
+    match ramdisk::bytes(boot_info) {
+        Ok(bytes) => {
+            serial::write_str("X11-OS: userspace ramdisk loaded bytes = ");
+            serial::write_usize(bytes.len());
+            serial::write_str("\r\n");
+            match process::ElfImage::parse(bytes) {
+                Ok(image) => {
+                    serial::write_str("X11-OS: userspace ELF validated segments = ");
+                    serial::write_usize(image.segment_count());
+                    serial::write_str("\r\n");
+                }
+                Err(_) => serial::write_str("X11-OS: userspace ELF validation failed\r\n"),
+            }
+        }
+        Err(_) => serial::write_str("X11-OS: userspace ramdisk unavailable\r\n"),
+    }
 
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
