@@ -4,6 +4,7 @@ pub mod acpi;
 pub mod apic;
 mod gdt;
 mod idt;
+pub mod local_apic;
 pub mod page_table;
 pub mod paging;
 
