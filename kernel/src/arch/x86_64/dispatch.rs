@@ -4,7 +4,7 @@
 //! the concrete execution bindings and is the only architecture-facing place
 //! allowed to request a context switch during bootstrap.
 
-use crate::scheduler::TaskId;
+use crate::scheduler::{ExecutionBinding, TaskId};
 
 use super::context_switch;
 use super::execution::X86ExecutionBinding;
@@ -48,7 +48,7 @@ pub unsafe fn switch(
     current: &mut context_switch::Context,
     next: &context_switch::Context,
 ) {
-    context_switch::switch(current, next);
+    unsafe { context_switch::switch(current as *mut _, next as *const _) };
 }
 
 #[allow(dead_code)]
