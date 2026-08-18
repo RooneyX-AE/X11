@@ -5,7 +5,7 @@
 //! subsystem does not depend on the architecture crate.
 
 use x86_64::structures::paging::{
-    mapper::{MapToError, MapperFlush, UnmapError},
+    mapper::{MapToError, MapperFlush, Translate, UnmapError},
     FrameAllocator as X86FrameAllocator,
     Mapper,
     Page,
@@ -96,7 +96,7 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         let target =
             Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
 
-        if self.inner.translate(target.start_address()).is_some() {
+        if self.inner.translate(target.start_address()).is_ok() {
             return Err(MappingError::AlreadyMapped);
         }
 
@@ -158,7 +158,7 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         }
 
         self.inner
-            .translate(x86_64::VirtAddr::new(virtual_address))
+            .translate_addr(x86_64::VirtAddr::new(virtual_address))
             .map(|address| address.as_u64())
     }
 
