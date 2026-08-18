@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 
 use crate::scheduler::{ExecutionBinding, ExecutionHandle, TaskId};
 
+use super::context_switch::Context;
 use super::execution::{ExecutionError, X86ExecutionBinding};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -79,6 +80,33 @@ impl ExecutionRegistry {
             .find(|binding| binding.task_id() == task_id)
     }
 
+    /// Returns the mutable current context and immutable next context for two
+    /// distinct tasks without creating overlapping Rust mutable references.
+    pub fn context_pair_mut(
+        &mut self,
+        current: TaskId,
+        next: TaskId,
+    ) -> Option<(&mut Context, &Context)> {
+        if current == next {
+            return None;
+        }
+
+        let current_index = self.index_of(current)?;
+        let next_index = self.index_of(next)?;
+
+        if current_index < next_index {
+            let (left, right) = self.entries.split_at_mut(next_index);
+            let current_binding = left[current_index].as_deref_mut()?;
+            let next_binding = right[0].as_deref()?;
+            Some((current_binding.context_mut(), next_binding.context()))
+        } else {
+            let (left, right) = self.entries.split_at_mut(current_index);
+            let next_binding = left[next_index].as_deref()?;
+            let current_binding = right[0].as_deref_mut()?;
+            Some((current_binding.context_mut(), next_binding.context()))
+        }
+    }
+
     pub fn contains(&self, handle: ExecutionHandle) -> bool {
         self.get(handle.task_id()).is_some()
     }
@@ -91,6 +119,14 @@ impl ExecutionRegistry {
         self.get(handle.task_id())
             .map(|binding| binding.validate().is_ok())
             .unwrap_or(false)
+    }
+
+    fn index_of(&self, task_id: TaskId) -> Option<usize> {
+        self.entries.iter().position(|entry| {
+            entry
+                .as_deref()
+                .is_some_and(|binding| binding.task_id() == task_id)
+        })
     }
 }
 
@@ -158,5 +194,13 @@ mod tests {
 
         let after = registry.get(first.task_id()).unwrap() as *const _;
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn context_pair_rejects_same_task() {
+        let mut registry = ExecutionRegistry::new();
+        let handle = ExecutionHandle::for_task(TaskId::new(5, 1));
+        registry.insert(handle, never_returns).unwrap();
+        assert!(registry.context_pair_mut(handle.task_id(), handle.task_id()).is_none());
     }
 }
