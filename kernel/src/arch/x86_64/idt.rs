@@ -9,10 +9,12 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Once;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::VirtAddr;
 
 use crate::interrupts::{InterruptEvent, InterruptSource, TIMER_VECTOR};
 
 use super::gdt::DOUBLE_FAULT_IST_INDEX;
+use super::interrupt_entry;
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static LAST_PAGE_FAULT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
@@ -28,8 +30,10 @@ pub fn init() {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
+            idt[TIMER_VECTOR as usize].set_handler_addr(VirtAddr::new(
+                interrupt_entry::timer_entry as *const () as usize as u64,
+            ));
         }
-        idt[TIMER_VECTOR as usize].set_handler_fn(timer_handler);
         idt
     });
 
@@ -61,13 +65,19 @@ extern "x86-interrupt" fn double_fault_handler(_stack_frame: InterruptStackFrame
     }
 }
 
-extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
+/// Shared timer bookkeeping used by both the raw timer entry and legacy Rust
+/// interrupt path. It owns no scheduler policy and never switches contexts.
+pub fn record_timer_interrupt() {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     TIMER_PENDING.store(true, Ordering::Release);
 
     if let Some(event) = InterruptEvent::new(InterruptSource::Timer) {
         crate::arch::x86_64::local_apic::end_of_interrupt(event);
     }
+}
+
+extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
+    record_timer_interrupt();
 }
 
 pub fn timer_ticks() -> u64 {
