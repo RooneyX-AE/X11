@@ -6,8 +6,8 @@
 
 use bootloader_api::BootInfo;
 
+use super::address_space::VirtRange;
 use super::region::PhysRange;
-use super::virtual::VirtRange;
 
 /// A kernel-owned physical-memory direct-map offset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
