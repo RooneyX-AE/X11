@@ -126,6 +126,22 @@ impl Scheduler {
             }
         }
 
+        // A single runnable task must never be encoded as a CPU context switch.
+        // Remove it from the ready queue again and keep it Running instead.
+        if let Some(previous_id) = previous {
+            if self.ready.len() == 1 && self.ready.peek() == Some(previous_id) {
+                let _ = self.ready.pop();
+                if let Some(task) = self.task_mut(previous_id) {
+                    let _ = task.transition(TaskState::Running);
+                }
+                self.current = Some(previous_id);
+                return DispatchDecision {
+                    previous,
+                    next: None,
+                };
+            }
+        }
+
         let next = self.ready.pop();
         if let Some(next_id) = next {
             if let Some(task) = self.task_mut(next_id) {
@@ -178,14 +194,21 @@ impl Scheduler {
         true
     }
 
-    pub fn current(&self) -> Option<TaskId> { self.current }
+    pub fn current(&self) -> Option<TaskId> {
+        self.current
+    }
 
     pub fn state(&self, id: TaskId) -> Option<TaskState> {
         self.task(id).map(TaskControlBlock::state)
     }
 
-    pub fn ready_len(&self) -> usize { self.ready.len() }
-    pub fn task_count(&self) -> usize { self.tasks.iter().filter(|task| task.is_some()).count() }
+    pub fn ready_len(&self) -> usize {
+        self.ready.len()
+    }
+
+    pub fn task_count(&self) -> usize {
+        self.tasks.iter().filter(|task| task.is_some()).count()
+    }
 
     #[cfg(test)]
     fn task_ptr(&self, id: TaskId) -> Option<*const TaskControlBlock> {
@@ -199,7 +222,11 @@ impl Scheduler {
 
     fn task_mut(&mut self, id: TaskId) -> Option<&mut TaskControlBlock> {
         let task = self.tasks.get_mut(id.index() as usize)?.as_deref_mut()?;
-        if task.id() == id { Some(task) } else { None }
+        if task.id() == id {
+            Some(task)
+        } else {
+            None
+        }
     }
 }
 
@@ -219,6 +246,18 @@ mod tests {
         assert_eq!(scheduler.state(first), Some(TaskState::Running));
         assert_eq!(scheduler.schedule_next().next, Some(second));
         assert_eq!(scheduler.state(second), Some(TaskState::Running));
+    }
+
+    #[test]
+    fn scheduler_single_task_does_not_self_dispatch() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(task));
+        assert_eq!(scheduler.schedule_next().next, Some(task));
+        assert_eq!(scheduler.schedule_next(), super::DispatchDecision { previous: Some(task), next: None });
+        assert_eq!(scheduler.state(task), Some(TaskState::Running));
+        assert_eq!(scheduler.current(), Some(task));
+        assert_eq!(scheduler.ready_len(), 0);
     }
 
     #[test]
@@ -274,7 +313,9 @@ mod tests {
         let mut scheduler = Scheduler::new();
         let first = scheduler.create_task(Priority::DEFAULT);
         let before = scheduler.task_ptr(first).expect("task must exist");
-        for _ in 0..128 { let _ = scheduler.create_task(Priority::DEFAULT); }
+        for _ in 0..128 {
+            let _ = scheduler.create_task(Priority::DEFAULT);
+        }
         let after = scheduler.task_ptr(first).expect("task must survive growth");
         assert_eq!(before, after);
     }
