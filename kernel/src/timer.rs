@@ -31,11 +31,7 @@ pub struct TimerInterval(u64);
 
 impl TimerInterval {
     pub const fn new(nanos: u64) -> Option<Self> {
-        if nanos == 0 {
-            None
-        } else {
-            Some(Self(nanos))
-        }
+        if nanos == 0 { None } else { Some(Self(nanos)) }
     }
 
     pub const fn as_nanos(self) -> u64 {
