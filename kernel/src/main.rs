@@ -7,10 +7,17 @@ mod arch;
 mod memory;
 mod serial;
 
+use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
 
-entry_point!(kernel_main);
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
@@ -30,11 +37,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_usize(memory.malformed_regions() as usize);
     serial::write_str("\r\n");
 
+    if let Some(mapping) = memory::PhysicalMemoryMapping::from_boot_info(boot_info) {
+        serial::write_str("X11-OS: physical memory mapping enabled at 0x");
+        serial::write_hex(mapping.offset());
+        serial::write_str("\r\n");
+    } else {
+        serial::write_str("X11-OS: physical memory mapping unavailable\r\n");
+    }
+
     let mut frame_allocator = memory::EarlyFrameAllocator::new(&boot_info.memory_regions);
     match memory::FrameAllocator::allocate_frame(&mut frame_allocator) {
         Some(frame) => {
-            serial::write_str("X11-OS: first free frame = ");
-            serial::write_usize(frame.start_address() as usize);
+            serial::write_str("X11-OS: first free frame = 0x");
+            serial::write_hex(frame.start_address());
             serial::write_str("\r\n");
         }
         None => {
