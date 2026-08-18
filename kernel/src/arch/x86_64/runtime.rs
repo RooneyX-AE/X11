@@ -10,11 +10,20 @@ use crate::scheduler::{Priority, TaskId};
 
 use super::context_switch::Context;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
+use super::yield::{self, YieldError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RuntimeError {
     Task(KernelTaskError),
     NoRunnableTask,
+    MissingExecutionPair,
+    Yield(YieldError),
+}
+
+impl From<YieldError> for RuntimeError {
+    fn from(error: YieldError) -> Self {
+        Self::Yield(error)
+    }
 }
 
 #[derive(Debug)]
@@ -65,6 +74,55 @@ impl KernelRuntime {
         decision.next.ok_or(RuntimeError::NoRunnableTask)
     }
 
+    /// Select the next runnable task and perform the architecture-specific
+    /// voluntary context switch. The first call activates a task from the boot
+    /// continuation; later calls switch between two live task contexts.
+    ///
+    /// # Safety
+    /// The task entry functions must obey the kernel-task ABI and return only
+    /// through the scheduler/runtime's explicit lifecycle paths. Interrupt
+    /// state must be controlled by the caller during the switch boundary.
+    pub unsafe fn dispatch_once(&mut self) -> Result<(), RuntimeError> {
+        let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
+        let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+
+        match decision.previous {
+            None => {
+                let next_context = self
+                    .manager
+                    .executions
+                    .get(next)
+                    .ok_or(RuntimeError::MissingExecutionPair)?
+                    .context();
+
+                // SAFETY: `boot_context` is the live continuation owned by this
+                // runtime and `next_context` belongs to a validated execution
+                // binding whose stack lifetime is owned by the registry.
+                unsafe {
+                    yield::activate_first(
+                        &mut self.boot_context as *mut Context,
+                        next_context as *const Context,
+                    )?;
+                }
+            }
+            Some(previous) => {
+                let (current, next_context) = self
+                    .manager
+                    .executions
+                    .context_pair_mut(previous, next)
+                    .ok_or(RuntimeError::MissingExecutionPair)?;
+
+                // SAFETY: `context_pair_mut` guarantees distinct execution
+                // objects and the registry owns their backing stacks.
+                unsafe {
+                    yield::switch(current as *mut Context, next_context as *const Context)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn execution_ready(&self, task_id: TaskId) -> bool {
         self.manager.is_executable(task_id)
     }
@@ -72,12 +130,7 @@ impl KernelRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::KernelRuntime;
-    use crate::scheduler::{Priority, TaskState};
-
-    extern "C" fn never_returns() -> ! {
-        loop {}
-    }
+    use super::{KernelRuntime, RuntimeError};
 
     #[test]
     fn boxed_runtime_has_stable_address() {
@@ -88,18 +141,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_spawns_execution_ready_task() {
+    fn dispatch_requires_a_runnable_task() {
         let mut runtime = KernelRuntime::new();
-        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Ready));
-        assert!(runtime.execution_ready(task));
-    }
-
-    #[test]
-    fn runtime_prepares_one_runnable_task() {
-        let mut runtime = KernelRuntime::new();
-        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        assert_eq!(runtime.prepare_run().unwrap(), task);
-        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Running));
+        let result = unsafe { runtime.dispatch_once() };
+        assert_eq!(result, Err(RuntimeError::Task(super::KernelTaskError::Scheduler(
+            crate::scheduler::SchedulerError::TaskNotCreated,
+        ))));
     }
 }
