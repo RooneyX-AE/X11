@@ -16,6 +16,7 @@ pub mod local_apic;
 pub mod preemption;
 pub mod runtime;
 pub mod tsc;
+pub mod yield;
 mod gdt;
 mod idt;
 pub mod page_table;
