@@ -1,9 +1,12 @@
 //! Bounded process registry with explicit lifecycle ownership.
 //!
-//! This registry owns process identity and state only. Scheduler policy,
-//! address-space mapping, and architecture execution remain separate.
+//! This registry owns process identity, lifecycle state, and the relationship
+//! between a process and its execution binding. Scheduler policy, address-space
+//! mapping, and architecture execution remain separate.
 
-use super::{ProcessId, ProcessImage, ProcessState};
+use super::{ProcessExecutionBinding, ProcessId, ProcessImage, ProcessState};
+use crate::memory::AddressSpaceId;
+use crate::scheduler::{ExecutionHandle, TaskId};
 
 pub const MAX_PROCESSES: usize = 256;
 
@@ -13,6 +16,8 @@ pub enum ProcessManagerError {
     InvalidProcess,
     InvalidTransition,
     GenerationExhausted,
+    AlreadyBound,
+    BindingMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,10 +25,16 @@ struct Slot {
     generation: u32,
     image: Option<ProcessImage>,
     state: Option<ProcessState>,
+    binding: Option<ProcessExecutionBinding>,
 }
 
 impl Slot {
-    const EMPTY: Self = Self { generation: 0, image: None, state: None };
+    const EMPTY: Self = Self {
+        generation: 0,
+        image: None,
+        state: None,
+        binding: None,
+    };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,13 +45,18 @@ pub struct ProcessManager {
 
 impl ProcessManager {
     pub const fn new() -> Self {
-        Self { slots: [Slot::EMPTY; MAX_PROCESSES], next_hint: 0 }
+        Self {
+            slots: [Slot::EMPTY; MAX_PROCESSES],
+            next_hint: 0,
+        }
     }
 
     pub fn register_ready(&mut self, image: ProcessImage) -> Result<ProcessId, ProcessManagerError> {
         for offset in 0..MAX_PROCESSES {
             let index = (self.next_hint + offset) % MAX_PROCESSES;
-            if self.slots[index].image.is_some() { continue; }
+            if self.slots[index].image.is_some() {
+                continue;
+            }
 
             let generation = self.slots[index]
                 .generation
@@ -51,6 +67,7 @@ impl ProcessManager {
                 generation,
                 image: Some(image),
                 state: Some(ProcessState::Ready),
+                binding: None,
             };
             self.next_hint = (index + 1) % MAX_PROCESSES;
             return Ok(id);
@@ -66,10 +83,37 @@ impl ProcessManager {
         self.slot(id)?.image.ok_or(ProcessManagerError::InvalidProcess)
     }
 
+    pub fn binding(&self, id: ProcessId) -> Result<Option<ProcessExecutionBinding>, ProcessManagerError> {
+        Ok(self.slot(id)?.binding)
+    }
+
+    pub fn attach_execution(
+        &mut self,
+        id: ProcessId,
+        task: TaskId,
+        execution: ExecutionHandle,
+        address_space: AddressSpaceId,
+    ) -> Result<ProcessExecutionBinding, ProcessManagerError> {
+        let slot = self.slot_mut(id)?;
+        if slot.binding.is_some() {
+            return Err(ProcessManagerError::AlreadyBound);
+        }
+        if slot.image.ok_or(ProcessManagerError::InvalidProcess)?.address_space().id() != address_space {
+            return Err(ProcessManagerError::BindingMismatch);
+        }
+        let binding = ProcessExecutionBinding::new(id, task, execution, address_space)
+            .ok_or(ProcessManagerError::BindingMismatch)?;
+        slot.binding = Some(binding);
+        Ok(binding)
+    }
+
     pub fn start(&mut self, id: ProcessId) -> Result<(), ProcessManagerError> {
         let slot = self.slot_mut(id)?;
         if slot.state != Some(ProcessState::Ready) {
             return Err(ProcessManagerError::InvalidTransition);
+        }
+        if slot.binding.is_none() {
+            return Err(ProcessManagerError::BindingMismatch);
         }
         slot.state = Some(ProcessState::Running);
         Ok(())
@@ -82,6 +126,7 @@ impl ProcessManager {
         }
         slot.state = Some(ProcessState::Exited);
         slot.image = None;
+        slot.binding = None;
         Ok(())
     }
 
@@ -115,7 +160,9 @@ impl Default for ProcessManager {
 #[cfg(test)]
 mod tests {
     use super::{ProcessManager, ProcessManagerError};
-    use crate::process::{AddressSpaceId, AddressSpaceSpec, ElfImage, LoadPlan, ProcessImage, ProcessState, UserStackPlan};
+    use crate::memory::AddressSpaceId;
+    use crate::process::{AddressSpaceSpec, ElfImage, LoadPlan, ProcessImage, ProcessState, UserStackPlan};
+    use crate::scheduler::{ExecutionHandle, TaskId};
 
     fn image() -> ProcessImage {
         let mut bytes = [0u8; 120];
@@ -135,20 +182,41 @@ mod tests {
         bytes[p + 32..p + 40].copy_from_slice(&16u64.to_le_bytes());
         bytes[p + 40..p + 48].copy_from_slice(&0x1000u64.to_le_bytes());
         let parsed = ElfImage::parse(&bytes).unwrap();
-        let address_space = AddressSpaceSpec::new(AddressSpaceId::new(1).unwrap());
-        let plan = LoadPlan::build(address_space, parsed).unwrap();
-        ProcessImage::build(address_space, plan, UserStackPlan::build().unwrap()).unwrap()
+        let address_space = AddressSpaceId::new(1).unwrap();
+        let spec = AddressSpaceSpec::new(address_space);
+        let plan = LoadPlan::build(spec, parsed).unwrap();
+        ProcessImage::build(spec, plan, UserStackPlan::build().unwrap()).unwrap()
     }
 
     #[test]
-    fn lifecycle_is_owned_by_manager() {
+    fn lifecycle_requires_execution_binding_before_running() {
         let mut manager = ProcessManager::new();
         let id = manager.register_ready(image()).unwrap();
-        assert_eq!(manager.state(id), Ok(ProcessState::Ready));
+        assert_eq!(manager.start(id), Err(ProcessManagerError::BindingMismatch));
+    }
+
+    #[test]
+    fn matching_execution_binding_allows_running() {
+        let mut manager = ProcessManager::new();
+        let id = manager.register_ready(image()).unwrap();
+        let task = TaskId::new(3, 1);
+        let execution = ExecutionHandle::for_task(task);
+        let as_id = AddressSpaceId::new(1).unwrap();
+        assert!(manager.attach_execution(id, task, execution, as_id).is_ok());
         manager.start(id).unwrap();
         assert_eq!(manager.state(id), Ok(ProcessState::Running));
-        manager.exit(id).unwrap();
-        assert!(!manager.contains(id));
+    }
+
+    #[test]
+    fn wrong_address_space_is_rejected() {
+        let mut manager = ProcessManager::new();
+        let id = manager.register_ready(image()).unwrap();
+        let task = TaskId::new(3, 1);
+        let wrong = AddressSpaceId::new(2).unwrap();
+        assert_eq!(
+            manager.attach_execution(id, task, ExecutionHandle::for_task(task), wrong),
+            Err(ProcessManagerError::BindingMismatch)
+        );
     }
 
     #[test]
