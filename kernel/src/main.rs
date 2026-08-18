@@ -22,8 +22,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use memory::FrameAllocator;
 use timer::TimerDevice;
 
-use arch::x86_64::page_table::X86PageTableMapper;
-
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::Dynamic);
@@ -45,6 +43,8 @@ extern "C" fn preemption_task_a() -> ! {
 
 extern "C" fn preemption_task_b() -> ! {
     serial::write_str("X11-OS: task B started\r\n");
+    x86_64::instructions::interrupts::enable();
+    serial::write_str("X11-OS: interrupts enabled in task B\r\n");
     loop {
         if PREEMPT_IRET_RETURNED.swap(false, Ordering::AcqRel) {
             serial::write_str("X11-OS: task B resumed through kernel iretq\r\n");
@@ -179,19 +179,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
     // SAFETY: runtime is boxed and remains alive for the entire kernel lifetime.
     unsafe { runtime.bind_cpu().expect("runtime must bind to bootstrap CPU"); }
-    let _task_a = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_a)
-        .expect("task A must spawn");
-    let _task_b = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_b)
-        .expect("task B must spawn");
+    let _task_a = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_a).expect("task A must spawn");
+    let _task_b = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_b).expect("task B must spawn");
 
     serial::write_str("X11-OS: kernel runtime bound to CPU0\r\n");
     serial::write_str("X11-OS: preemption proof tasks armed\r\n");
+    serial::write_str("X11-OS: interrupts remain disabled until task B starts\r\n");
 
-    x86_64::instructions::interrupts::enable();
-    serial::write_str("X11-OS: interrupts enabled, entering scheduler\r\n");
-
-    // SAFETY: runtime owns all execution bindings, interrupts are enabled only
-    // after binding/spawn, and this first dispatch targets a fresh bootstrap task.
+    // SAFETY: runtime owns all execution bindings and the bootstrap dispatch
+    // targets a fresh task. Task B enables interrupts after A yields to it.
     unsafe { runtime.dispatch_once().expect("initial runtime dispatch must succeed"); }
 
     loop { core::hint::spin_loop(); }
