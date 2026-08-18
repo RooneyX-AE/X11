@@ -5,15 +5,25 @@
 //! subsystem does not depend on the architecture crate.
 
 use x86_64::structures::paging::{
-    mapper::MapperFlush, FrameAllocator as X86FrameAllocator, Mapper, Page, PageTableFlags,
-    PhysFrame, Size4KiB,
+    mapper::{MapToError, MapperFlush, UnmapError},
+    FrameAllocator as X86FrameAllocator,
+    Mapper,
+    Page,
+    PageTableFlags,
+    PhysFrame,
+    Size4KiB,
 };
 use x86_64::PhysAddr;
 
 use crate::arch::x86_64::paging;
 use crate::memory::{
-    EarlyFrameAllocator, FrameAllocator as X11FrameAllocator, MappingError, MappingFlush, Page4K,
-    PageTableMapper, VirtRange,
+    EarlyFrameAllocator,
+    FrameAllocator as X11FrameAllocator,
+    MappingError,
+    MappingFlush,
+    Page4K,
+    PageTableMapper,
+    VirtRange,
 };
 
 /// TLB flush token produced by an x86_64 mapping operation.
@@ -83,26 +93,59 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
 
         let frame = PhysFrame::<Size4KiB>::from_start_address(PhysAddr::new(physical_address))
             .map_err(|_| MappingError::InvalidPhysicalAddress)?;
-        let target = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
+        let target =
+            Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
 
-        // SAFETY: The target page, backing frame, and allocator satisfy the
-        // mapper preconditions; the allocator yields only usable 4 KiB frames.
-        let flush = unsafe {
+        if self.inner.translate(target.start_address()).is_some() {
+            return Err(MappingError::AlreadyMapped);
+        }
+
+        // SAFETY: The target page is validated by the kernel address-space
+        // policy, the backing frame is page-aligned, and the allocator only
+        // yields usable 4 KiB frames.
+        let result = unsafe {
             self.inner.map_to(
                 target,
                 frame,
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                 &mut self.frame_allocator,
             )
-        }
-        .map_err(|_| MappingError::BackendFailure)?;
+        };
+
+        let flush = match result {
+            Ok(flush) => flush,
+            Err(MapToError::FrameAllocationFailed) => {
+                return Err(MappingError::FrameAllocationFailed)
+            }
+            Err(MapToError::ParentEntryHugePage) => {
+                return Err(MappingError::ParentEntryHugePage)
+            }
+            Err(MapToError::PageAlreadyMapped(_)) => return Err(MappingError::AlreadyMapped),
+        };
 
         Ok(X86Flush(flush))
     }
 
     fn unmap_page(&mut self, page: Page4K) -> Result<(u64, Self::Flush), MappingError> {
-        let target = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
-        let (frame, flush) = self.inner.unmap(target).map_err(|_| MappingError::NotMapped)?;
+        if page.range().is_none() {
+            return Err(MappingError::InvalidPhysicalAddress);
+        }
+
+        let target =
+            Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
+        let result = self.inner.unmap(target);
+
+        let (frame, flush) = match result {
+            Ok(result) => result,
+            Err(UnmapError::PageNotMapped) => return Err(MappingError::NotMapped),
+            Err(UnmapError::ParentEntryHugePage) => {
+                return Err(MappingError::ParentEntryHugePage)
+            }
+            Err(UnmapError::InvalidFrameAddress(_)) => {
+                return Err(MappingError::InvalidMappedFrame)
+            }
+        };
+
         Ok((frame.start_address().as_u64(), X86Flush(flush)))
     }
 
