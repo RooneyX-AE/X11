@@ -1,23 +1,28 @@
-//! CPU exception handling.
+//! CPU exception and early interrupt handling.
 //!
-//! Only a small, explicit exception surface is installed at this stage.
-//! Additional interrupt vectors will be introduced together with the APIC and
-//! interrupt-controller design rather than being guessed here.
+//! Exception handlers remain explicit, while the timer vector is installed as
+//! the first hardware-interrupt entry. The timer handler only updates an
+//! atomic counter and completes the APIC interrupt, keeping scheduling policy
+//! out of the architecture layer.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use spin::Once;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
+use crate::interrupts::{InterruptEvent, InterruptSource, TIMER_VECTOR};
+
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static LAST_PAGE_FAULT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
+        idt[TIMER_VECTOR as usize].set_handler_fn(timer_handler);
         idt
     });
 
@@ -39,4 +44,15 @@ extern "x86-interrupt" fn page_fault_handler(
     loop {
         core::hint::spin_loop();
     }
+}
+
+extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
+    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    if let Some(event) = InterruptEvent::new(InterruptSource::Timer) {
+        crate::arch::x86_64::local_apic::end_of_interrupt(event);
+    }
+}
+
+pub fn timer_ticks() -> u64 {
+    TIMER_TICKS.load(Ordering::Relaxed)
 }
