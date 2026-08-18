@@ -18,15 +18,15 @@ jobs:
           components: rust-src, llvm-tools-preview, rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Check kernel
-        run: cargo check -p x11-os-kernel --target x86_64-unknown-none
+      - name: Check kernel binary
+        run: cargo check -p x11-os-kernel --bin x11-os-kernel --target x86_64-unknown-none
       - name: Build UEFI image
         run: cargo build -p x11-os-boot
       - name: Install QEMU and UEFI firmware
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 ovmf
-      - name: Boot kernel and verify platform, memory, timer, and scheduler paths
+      - name: Boot kernel and verify platform, memory, timer, scheduler, and preemption paths
         shell: bash
         run: |
           set -o pipefail
