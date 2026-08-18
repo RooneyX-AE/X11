@@ -1,8 +1,8 @@
 //! CPU exception and early interrupt handling.
 //!
-//! Interrupt handlers stay intentionally small. Timer IRQ delivery records a
+//! Interrupt handlers stay intentionally small. The raw timer entry records a
 //! pending event and acknowledges the local APIC; scheduler policy is serviced
-//! outside the interrupt context.
+//! outside interrupt context.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -65,8 +65,10 @@ extern "x86-interrupt" fn double_fault_handler(_stack_frame: InterruptStackFrame
     }
 }
 
-/// Shared timer bookkeeping used by both the raw timer entry and legacy Rust
-/// interrupt path. It owns no scheduler policy and never switches contexts.
+/// Shared timer bookkeeping for the raw timer entry.
+///
+/// This is the sole timer-event accounting path. It owns no scheduler policy
+/// and never performs a context switch.
 pub fn record_timer_interrupt() {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     TIMER_PENDING.store(true, Ordering::Release);
@@ -74,10 +76,6 @@ pub fn record_timer_interrupt() {
     if let Some(event) = InterruptEvent::new(InterruptSource::Timer) {
         crate::arch::x86_64::local_apic::end_of_interrupt(event);
     }
-}
-
-extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    record_timer_interrupt();
 }
 
 pub fn timer_ticks() -> u64 {
