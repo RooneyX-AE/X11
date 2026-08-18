@@ -48,8 +48,6 @@ impl KernelTaskManager {
         }
     }
 
-    /// Create an executable kernel task and make it ready only after its
-    /// concrete x86 execution state has been installed successfully.
     pub fn spawn(
         &mut self,
         priority: Priority,
@@ -78,17 +76,15 @@ impl KernelTaskManager {
         Ok(task_id)
     }
 
-    /// Validate the next ready task without mutating scheduler state, then
-    /// commit the scheduler transition. This is the only bootstrap path that
-    /// may authorize a later architecture-specific context switch.
     pub fn prepare_dispatch(&mut self) -> Result<DispatchDecision, KernelTaskError> {
         let previous = self.scheduler.current();
         let Some(candidate) = self.scheduler.next_ready() else {
-            return Ok(DispatchDecision {
-                previous,
-                next: previous,
-            });
+            return Ok(DispatchDecision { previous, next: None });
         };
+
+        if Some(candidate) == previous {
+            return Ok(DispatchDecision { previous, next: None });
+        }
 
         dispatch::validate_transition(&self.executions, previous, candidate)?;
         let decision = self.scheduler.schedule_next();
@@ -102,6 +98,19 @@ impl KernelTaskManager {
             return false;
         };
         self.executions.is_valid(handle)
+    }
+
+    pub fn exit_current(&mut self) -> bool {
+        let Some(task_id) = self.scheduler.current() else {
+            return false;
+        };
+        let Some(handle) = self.scheduler.execution(task_id) else {
+            return false;
+        };
+        if !self.scheduler.exit_current() {
+            return false;
+        }
+        self.executions.remove(handle)
     }
 
     pub fn task_count(&self) -> usize {
@@ -138,11 +147,22 @@ mod tests {
     }
 
     #[test]
-    fn prepare_dispatch_does_not_change_state_without_a_ready_task() {
+    fn prepare_dispatch_returns_noop_without_another_ready_task() {
         let mut manager = KernelTaskManager::new();
-        assert_eq!(
-            manager.prepare_dispatch().unwrap(),
-            DispatchDecision { previous: None, next: None }
-        );
+        let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
+        assert_eq!(manager.prepare_dispatch().unwrap(), DispatchDecision { previous: None, next: Some(task) });
+        assert_eq!(manager.prepare_dispatch().unwrap(), DispatchDecision { previous: Some(task), next: None });
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Running));
+    }
+
+    #[test]
+    fn exit_current_releases_execution_registry_entry() {
+        let mut manager = KernelTaskManager::new();
+        let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
+        let handle = manager.scheduler.execution(task).unwrap();
+        assert!(manager.prepare_dispatch().is_ok());
+        assert!(manager.exit_current());
+        assert!(!manager.executions.contains(handle));
+        assert_eq!(manager.scheduler.state(task), None);
     }
 }
