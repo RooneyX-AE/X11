@@ -13,6 +13,7 @@ use super::context_switch::Context;
 use super::cpu_local::{self, RuntimeBindingError};
 use super::execution::ExecutionError;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
+use super::preemption_plan::PreemptionPlan;
 use super::yield_switch::{self, YieldError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -99,6 +100,17 @@ impl KernelRuntime {
         decision.next.ok_or(RuntimeError::NoRunnableTask)
     }
 
+    /// Selects the scheduler's next task and resolves the architecture return
+    /// mechanism without performing the final CPU transfer.
+    pub fn prepare_preemption(&mut self) -> Result<PreemptionPlan, RuntimeError> {
+        let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
+        let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+        self.manager
+            .executions
+            .preemption_plan(next)
+            .ok_or(RuntimeError::MissingExecutionPair)
+    }
+
     pub fn service_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
         let woken = self.manager.expire_sleepers(now);
         self.request_reschedule();
@@ -110,8 +122,8 @@ impl KernelRuntime {
         self.service_timer(now)
     }
 
-    /// Performs one scheduler dispatch and synchronizes the CPU-local current
-    /// task identity on both sides of the context-switch continuation.
+    /// Performs one voluntary scheduler dispatch and synchronizes the CPU-local
+    /// current task identity on both sides of the continuation.
     ///
     /// # Safety
     /// The caller must exclude interrupt/preemption races around the switch
@@ -173,6 +185,7 @@ impl Drop for PreemptionDisableGuard<'_> {
 mod tests {
     use super::{KernelRuntime, RuntimeError};
     use crate::arch::x86_64::cpu_local::CpuLocalState;
+    use crate::arch::x86_64::preemption_plan::PreemptionPlan;
     use crate::scheduler::{Priority, TaskState};
 
     extern "C" fn never_returns() -> ! { loop {} }
@@ -206,5 +219,12 @@ mod tests {
         let cpu = CpuLocalState::new();
         unsafe { cpu.set_current_task(None); }
         assert_eq!(cpu.current_task(), None);
+    }
+
+    #[test]
+    fn fresh_preemption_plan_bootstraps_new_task() {
+        let mut runtime = KernelRuntime::new();
+        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
+        assert!(matches!(runtime.prepare_preemption().unwrap(), PreemptionPlan::Bootstrap { task_id } if task_id == task));
     }
 }
