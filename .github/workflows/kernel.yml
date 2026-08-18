@@ -81,9 +81,19 @@ jobs:
           set -e
           test "$qemu_status" -eq 124
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           log = Path("qemu.log").read_text(errors="replace")
+          forbidden = [
+              "X11-OS: KERNEL PANIC",
+              "[x11-os] double fault",
+              "[x11-os] page fault",
+          ]
+          for marker in forbidden:
+              if marker in log:
+                  raise SystemExit(f"forbidden runtime marker observed: {marker}")
+
           required = [
               "X11-OS: kernel entry reached",
               "X11-OS: CPU foundation initialized",
@@ -104,6 +114,7 @@ jobs:
               "X11-OS: interrupts enabled in task B",
               "X11-OS: task A resumed after timer preemption",
               "X11-OS: task B resumed through kernel iretq",
+              "X11-OS: timer ticks observed after iretq =",
           ]
 
           position = -1
@@ -113,7 +124,11 @@ jobs:
                   raise SystemExit(f"missing or out-of-order runtime marker: {marker}")
               position = next_position
 
-          print("QEMU runtime marker order verified")
+          tick_match = re.search(r"timer ticks observed after iretq = (\d+)", log)
+          if not tick_match or int(tick_match.group(1)) <= 0:
+              raise SystemExit("timer tick evidence is missing or zero")
+
+          print("QEMU runtime marker order and timer evidence verified")
           PY
       - name: Upload diagnostics
         if: always()
