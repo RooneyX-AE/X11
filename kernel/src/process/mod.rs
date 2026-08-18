@@ -5,5 +5,7 @@
 //! ownership.
 
 mod address_space;
+mod image;
 
-pub use address_space::{AddressSpaceId, AddressSpaceSpec};
+pub use address_space::{AddressSpaceError, AddressSpaceId, AddressSpaceSpec};
+pub use image::{ElfError, ElfImage, LoadSegment};
