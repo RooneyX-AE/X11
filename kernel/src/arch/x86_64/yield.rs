@@ -46,6 +46,44 @@ pub fn validate(current: *mut Context, next: *const Context) -> Result<(), Yield
     Ok(())
 }
 
+/// Activate the first kernel task from the boot continuation.
+///
+/// The boot context is intentionally uninitialized before the first switch;
+/// the context-switch primitive will populate it with the real continuation.
+/// This is deliberately separate from `switch` so normal yield callers never
+/// bypass current-context validation.
+///
+/// # Safety
+/// The caller must guarantee that `current` and `next` are live, distinct
+/// contexts, `next` is initialized, and both backing stacks remain valid for
+/// the duration of the switch.
+pub unsafe fn activate_first(
+    current: *mut Context,
+    next: *const Context,
+) -> Result<(), YieldError> {
+    if current.is_null() {
+        return Err(YieldError::NullCurrent);
+    }
+    if next.is_null() {
+        return Err(YieldError::NullNext);
+    }
+    if core::ptr::eq(current.cast_const(), next) {
+        return Err(YieldError::SameContext);
+    }
+
+    // SAFETY: callers guarantee that `current` is a live boot context that may
+    // be initialized by the switch and `next` is a valid initialized task
+    // context with a live backing stack.
+    let next_ref = unsafe { &*next };
+    if !next_ref.is_initialized() {
+        return Err(YieldError::NextUninitialized);
+    }
+
+    // SAFETY: all activation invariants above have been checked.
+    unsafe { context_switch::switch(current, next) };
+    Ok(())
+}
+
 /// Perform a voluntary context switch after scheduler/runtime validation.
 ///
 /// # Safety
@@ -62,7 +100,7 @@ pub unsafe fn switch(current: *mut Context, next: *const Context) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::{validate, YieldError};
+    use super::{activate_first, validate, YieldError};
     use crate::arch::x86_64::context_switch::Context;
 
     #[test]
@@ -110,5 +148,13 @@ mod tests {
             ..Context::empty()
         };
         assert_eq!(validate(&mut current, &next), Ok(()));
+    }
+
+    #[test]
+    fn first_activation_rejects_uninitialized_next_context() {
+        let mut current = Context::empty();
+        let next = Context::empty();
+        let result = unsafe { activate_first(&mut current, &next) };
+        assert_eq!(result, Err(YieldError::NextUninitialized));
     }
 }
