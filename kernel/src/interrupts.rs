@@ -4,7 +4,8 @@
 //! and scheduler implementations can evolve without changing the event model.
 
 pub const EXCEPTION_VECTOR_MAX: u8 = 31;
-pub const EXTERNAL_VECTOR_BASE: u8 = 32;
+pub const TIMER_VECTOR: u8 = 32;
+pub const EXTERNAL_VECTOR_BASE: u8 = 33;
 pub const VECTOR_MAX: u8 = 255;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,7 +21,7 @@ impl InterruptSource {
     pub const fn vector(self) -> u8 {
         match self {
             Self::Exception(vector) | Self::External(vector) | Self::InterProcessor(vector) => vector,
-            Self::Timer => EXTERNAL_VECTOR_BASE,
+            Self::Timer => TIMER_VECTOR,
             Self::Spurious => VECTOR_MAX,
         }
     }
@@ -53,11 +54,17 @@ impl InterruptEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{InterruptEvent, InterruptSource, EXTERNAL_VECTOR_BASE, VECTOR_MAX};
+    use super::{InterruptEvent, InterruptSource, EXTERNAL_VECTOR_BASE, TIMER_VECTOR, VECTOR_MAX};
 
     #[test]
-    fn rejects_external_vector_below_exception_range() {
-        assert!(InterruptEvent::new(InterruptSource::External(31)).is_none());
+    fn rejects_external_vector_below_external_range() {
+        assert!(InterruptEvent::new(InterruptSource::External(TIMER_VECTOR)).is_none());
+    }
+
+    #[test]
+    fn timer_owns_vector_32() {
+        let event = InterruptEvent::new(InterruptSource::Timer).unwrap();
+        assert_eq!(event.vector(), TIMER_VECTOR);
     }
 
     #[test]
