@@ -13,8 +13,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly-2026-07-27
+          target: x86_64-unknown-none
           components: rust-src, llvm-tools-preview, rustfmt
-          targets: x86_64-unknown-none
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check kernel
