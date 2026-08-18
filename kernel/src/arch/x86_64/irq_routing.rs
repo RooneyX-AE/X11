@@ -69,11 +69,26 @@ pub fn resolve_isa_irq(
         break;
     }
 
-    if !has_io_apic_for_gsi(topology, route.gsi) {
+    if io_apic_index_for_gsi(topology, route.gsi).is_none() {
         return Err(IrqRoutingError::NoIoApicForGsi);
     }
 
     Ok(route)
+}
+
+/// Returns the I/O APIC whose GSI base is the greatest base not exceeding the GSI.
+///
+/// The final hardware-range check is intentionally deferred to `IoApic`, because
+/// the implemented redirection count is reported by that physical device's
+/// `IOAPICVER` register rather than by MADT.
+pub fn io_apic_index_for_gsi(topology: &ApicTopology, gsi: u32) -> Option<usize> {
+    topology.io_apics[..topology.io_apic_count]
+        .iter()
+        .enumerate()
+        .flatten()
+        .filter(|(_, ioapic)| ioapic.global_system_interrupt_base <= gsi)
+        .max_by_key(|(_, ioapic)| ioapic.global_system_interrupt_base)
+        .map(|(index, _)| index)
 }
 
 fn decode_flags(entry: &InterruptSourceOverride) -> Result<(Polarity, TriggerMode), IrqRoutingError> {
@@ -92,16 +107,10 @@ fn decode_flags(entry: &InterruptSourceOverride) -> Result<(Polarity, TriggerMod
     Ok((polarity, trigger))
 }
 
-fn has_io_apic_for_gsi(topology: &ApicTopology, gsi: u32) -> bool {
-    topology.io_apics[..topology.io_apic_count]
-        .iter()
-        .flatten()
-        .any(|ioapic| ioapic.global_system_interrupt_base <= gsi)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{IrqRoute, Polarity, TriggerMode};
+    use super::{io_apic_index_for_gsi, IrqRoute, Polarity, TriggerMode};
+    use crate::arch::x86_64::acpi::{ApicTopology, IoApicInfo};
 
     #[test]
     fn identity_route_preserves_isa_irq() {
@@ -109,5 +118,24 @@ mod tests {
         assert_eq!(route.gsi, 1);
         assert_eq!(route.polarity, Polarity::ConformsToBus);
         assert_eq!(route.trigger, TriggerMode::ConformsToBus);
+    }
+
+    #[test]
+    fn selects_nearest_lower_ioapic_gsi_base() {
+        let mut topology = ApicTopology::empty_for_tests();
+        topology.io_apics[0] = Some(IoApicInfo {
+            id: 1,
+            address: 0xfec0_0000,
+            global_system_interrupt_base: 0,
+        });
+        topology.io_apics[1] = Some(IoApicInfo {
+            id: 2,
+            address: 0xfec0_1000,
+            global_system_interrupt_base: 24,
+        });
+        topology.io_apic_count = 2;
+
+        assert_eq!(io_apic_index_for_gsi(&topology, 30), Some(1));
+        assert_eq!(io_apic_index_for_gsi(&topology, 10), Some(0));
     }
 }
