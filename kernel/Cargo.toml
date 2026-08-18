@@ -8,3 +8,4 @@ license.workspace = true
 crate-type = ["staticlib"]
 
 [dependencies]
+bootloader_api = "0.11"
