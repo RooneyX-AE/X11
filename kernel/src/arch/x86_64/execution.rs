@@ -16,7 +16,6 @@ pub const KERNEL_STACK_SIZE: usize = 32 * 1024;
 pub enum ExecutionError {
     StackAllocationFailed,
     InvalidStack,
-    TaskMismatch,
 }
 
 #[derive(Debug)]
@@ -79,13 +78,6 @@ impl ExecutionBinding for X86ExecutionBinding {
             return Err(ExecutionError::InvalidStack);
         }
         Ok(())
-    }
-
-    fn validate_for(&self, task_id: TaskId) -> Result<(), Self::Error> {
-        if self.task_id != task_id {
-            return Err(ExecutionError::TaskMismatch);
-        }
-        self.validate()
     }
 }
 
