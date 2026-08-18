@@ -5,7 +5,7 @@
 //! architecture backend supplies `ImagePageWriter`, keeping unsafe direct-map
 //! access out of the process loader.
 
-use super::{ElfImage, LoadResult};
+use super::{ElfImage, LoadResult, MAX_MAPPED_PAGES, MappedPage};
 use crate::memory::PAGE_SIZE_4K;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,9 +86,9 @@ mod tests {
 
     #[test]
     fn lookup_uses_exact_page_base() {
-        let mut pages = [None; 128];
+        let mut pages = [None; super::MAX_MAPPED_PAGES];
         pages[0] = Some(MappedPage { virtual_address: 0x401000, physical_address: 0x9000 });
-        let load = LoadResult { mapped_pages: 1, entry: 0x401000, pages };
+        let load = LoadResult::from_parts(1, 0x401000, pages);
         assert_eq!(find_mapped_page(load, 0x401000), Some(0));
         assert_eq!(find_mapped_page(load, 0x401001), None);
     }
