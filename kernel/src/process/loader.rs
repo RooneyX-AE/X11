@@ -6,7 +6,7 @@
 
 use crate::memory::{EarlyFrameAllocator, MappingError, MappingFlags, Page4K, PageTableMapper, PAGE_SIZE_4K};
 
-use super::{LoadPlan, LoadPlanError};
+use super::LoadPlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoadError {
@@ -17,7 +17,7 @@ pub enum LoadError {
     RollbackFailed,
 }
 
-const MAX_MAPPED_PAGES: usize = 128;
+pub const MAX_MAPPED_PAGES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MappedPage {
@@ -33,6 +33,14 @@ pub struct LoadResult {
 }
 
 impl LoadResult {
+    pub(crate) const fn from_parts(
+        mapped_pages: usize,
+        entry: u64,
+        pages: [Option<MappedPage>; MAX_MAPPED_PAGES],
+    ) -> Self {
+        Self { mapped_pages, entry, pages }
+    }
+
     pub fn page(self, index: usize) -> Option<MappedPage> {
         if index >= self.mapped_pages { None } else { self.pages[index] }
     }
@@ -93,7 +101,7 @@ pub fn map_load_plan<M: PageTableMapper>(
         }
     }
 
-    Ok(LoadResult { mapped_pages: count, entry: plan.entry(), pages })
+    Ok(LoadResult::from_parts(count, plan.entry(), pages))
 }
 
 fn rollback<M: PageTableMapper>(mapper: &mut M, pages: &[Option<MappedPage>; MAX_MAPPED_PAGES], count: usize) -> Result<(), LoadError> {
