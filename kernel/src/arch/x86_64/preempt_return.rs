@@ -35,23 +35,23 @@ pub unsafe extern "C" fn return_to_kernel(state: *const KernelPreemptState) -> !
     );
 }
 
-/// Starts a task from an existing cooperative kernel context. The interrupt
-/// frame is intentionally abandoned because the interrupted current task has
-/// already been copied into task-owned state. Kernel cooperative returns use
-/// IF=1 as their canonical runnable-state policy during bootstrap.
+/// Starts a task from an existing cooperative kernel context. The interrupted
+/// frame is intentionally abandoned because the interrupted task has already
+/// been copied into task-owned state. The task continuation is installed before
+/// interrupts are re-enabled, so a timer can never observe a half-built stack.
 #[unsafe(naked)]
 pub unsafe extern "C" fn return_to_context(context: *const Context) -> ! {
     core::arch::naked_asm!(
         "mov rsp, [rdi + 0]",
+        "push qword ptr [rdi + 56]",
         "mov rbp, [rdi + 8]",
         "mov rbx, [rdi + 16]",
         "mov r12, [rdi + 24]",
         "mov r13, [rdi + 32]",
         "mov r14, [rdi + 40]",
         "mov r15, [rdi + 48]",
+        "mov rdi, [rdi + 48]",
         "sti",
-        "nop",
-        "push qword ptr [rdi + 56]",
         "ret",
     );
 }
@@ -68,13 +68,25 @@ mod tests {
 
     #[test]
     fn validates_kernel_return_packet() {
-        let state = KernelPreemptState { registers: SavedRegisters::default(), rip: 0x1000, cs: 0x8, rflags: 0x202, resume_rsp: 0x8000 };
+        let state = KernelPreemptState {
+            registers: SavedRegisters::default(),
+            rip: 0x1000,
+            cs: 0x8,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+        };
         assert!(validate_kernel_state(&state));
     }
 
     #[test]
     fn rejects_user_code_selector() {
-        let state = KernelPreemptState { registers: SavedRegisters::default(), rip: 0x1000, cs: 0x1b, rflags: 0x202, resume_rsp: 0x8000 };
+        let state = KernelPreemptState {
+            registers: SavedRegisters::default(),
+            rip: 0x1000,
+            cs: 0x1b,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+        };
         assert!(!validate_kernel_state(&state));
     }
 }
