@@ -4,8 +4,8 @@
 //! architecture crate. TLB flushes remain explicit so callers cannot mistake
 //! a pending hardware update for a completed mapping operation.
 
+use super::address_space::VirtRange;
 use super::page::Page4K;
-use super::virtual::VirtRange;
 
 /// Errors returned while changing a virtual mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +56,7 @@ pub trait PageTableMapper {
 
 /// Initial kernel-only virtual address space policy.
 pub const KERNEL_ADDRESS_SPACE: VirtRange = match VirtRange::new(
-    super::virtual::KERNEL_SPACE_START,
+    super::address_space::KERNEL_SPACE_START,
     u64::MAX,
 ) {
     Some(range) => range,
