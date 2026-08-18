@@ -10,7 +10,7 @@ use alloc::boxed::Box;
 use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
 
 use super::context_switch::Context;
-use super::cpu_local;
+use super::cpu_local::{self, RuntimeBindingError};
 use super::execution::ExecutionError;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::yield_switch::{self, YieldError};
@@ -23,6 +23,7 @@ pub enum RuntimeError {
     Yield(YieldError),
     PreemptionDisabled,
     InterruptedState(ExecutionError),
+    CpuBinding(RuntimeBindingError),
 }
 
 impl From<YieldError> for RuntimeError {
@@ -52,6 +53,14 @@ impl KernelRuntime {
     pub const fn boot_context(&self) -> &Context { &self.boot_context }
     pub fn boot_context_mut(&mut self) -> &mut Context { &mut self.boot_context }
     pub fn address(&self) -> u64 { self as *const Self as usize as u64 }
+
+    /// Binds this stable runtime object to the current CPU. Bootstrap currently
+    /// has one CPU; SMP will replace this with a per-CPU runtime owner table.
+    pub unsafe fn bind_cpu(&mut self) -> Result<(), RuntimeError> {
+        cpu_local::local()
+            .bind_runtime(self as *mut Self as *mut ())
+            .map_err(RuntimeError::CpuBinding)
+    }
 
     pub fn request_reschedule(&self) { self.reschedule.request(); }
     pub fn is_reschedule_pending(&self) -> bool { self.reschedule.is_pending() }
@@ -163,7 +172,7 @@ impl Drop for PreemptionDisableGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::{KernelRuntime, RuntimeError};
-    use crate::arch::x86_64::cpu_local;
+    use crate::arch::x86_64::cpu_local::CpuLocalState;
     use crate::scheduler::{Priority, TaskState};
 
     extern "C" fn never_returns() -> ! { loop {} }
@@ -194,7 +203,8 @@ mod tests {
 
     #[test]
     fn cpu_local_identity_is_clear_before_dispatch() {
-        unsafe { cpu_local::local().set_current_task(None); }
-        assert_eq!(cpu_local::local().current_task(), None);
+        let cpu = CpuLocalState::new();
+        unsafe { cpu.set_current_task(None); }
+        assert_eq!(cpu.current_task(), None);
     }
 }
