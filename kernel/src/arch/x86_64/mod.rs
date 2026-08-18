@@ -2,6 +2,7 @@
 
 pub mod acpi;
 pub mod activation;
+pub mod address_space;
 pub mod apic;
 pub mod context_switch;
 pub mod cpu_local;
