@@ -21,6 +21,7 @@ pub mod preempt_return;
 pub mod preemption_plan;
 pub mod runtime;
 pub mod tsc;
+pub mod user_context;
 pub mod voluntary_switch;
 pub mod yield_switch;
 mod gdt;
