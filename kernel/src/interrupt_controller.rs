@@ -25,6 +25,7 @@ pub trait InterruptController {
 #[cfg(test)]
 mod tests {
     use super::InterruptController;
+    use crate::interrupts::EXTERNAL_VECTOR_BASE;
 
     struct TestController;
 
@@ -36,15 +37,16 @@ mod tests {
         }
 
         fn allocate_vector(&mut self) -> Result<Self::Vector, super::InterruptControllerError> {
-            Ok(32)
+            Ok(EXTERNAL_VECTOR_BASE)
         }
 
         fn end_of_interrupt(&mut self, _event: crate::interrupts::InterruptEvent) {}
     }
 
     #[test]
-    fn vector_policy_excludes_exception_space() {
+    fn vector_policy_excludes_exception_and_timer_space() {
         assert!(!TestController::supports_vector(31));
-        assert!(TestController::supports_vector(32));
+        assert!(!TestController::supports_vector(32));
+        assert!(TestController::supports_vector(EXTERNAL_VECTOR_BASE));
     }
 }
