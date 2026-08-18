@@ -4,7 +4,9 @@
 //! generic task first, binds an execution handle, installs the concrete x86
 //! execution state, and only then exposes the task to the ready queue.
 
-use crate::scheduler::{DispatchDecision, Priority, Scheduler, SchedulerError, TaskId};
+use crate::scheduler::{
+    DispatchDecision, Priority, Scheduler, SchedulerError, SleepEntry, SleepQueue, TaskId,
+};
 
 use super::dispatch::{self, DispatchError};
 use super::execution_registry::{ExecutionRegistry, RegistryInsertError};
@@ -38,6 +40,7 @@ impl From<DispatchError> for KernelTaskError {
 pub struct KernelTaskManager {
     pub scheduler: Scheduler,
     pub executions: ExecutionRegistry,
+    pub sleepers: SleepQueue,
 }
 
 impl KernelTaskManager {
@@ -45,6 +48,7 @@ impl KernelTaskManager {
         Self {
             scheduler: Scheduler::new(),
             executions: ExecutionRegistry::new(),
+            sleepers: SleepQueue::new(),
         }
     }
 
@@ -93,6 +97,23 @@ impl KernelTaskManager {
         Ok(decision)
     }
 
+    pub fn sleep_current_until(&mut self, deadline: u64) -> Result<TaskId, KernelTaskError> {
+        self.scheduler
+            .sleep_current_until(deadline, &mut self.sleepers)
+            .map_err(KernelTaskError::Scheduler)
+    }
+
+    /// Expires blocked sleep deadlines without selecting or switching a task.
+    /// The caller may perform scheduler dispatch after returning to normal
+    /// kernel context.
+    pub fn expire_sleepers(&mut self, now: u64) -> usize {
+        self.scheduler.expire_sleepers(now, &mut self.sleepers).len()
+    }
+
+    pub fn next_sleep_deadline(&self) -> Option<u64> {
+        self.sleepers.next_deadline()
+    }
+
     pub fn is_executable(&self, task_id: TaskId) -> bool {
         let Some(handle) = self.scheduler.execution(task_id) else {
             return false;
@@ -107,6 +128,7 @@ impl KernelTaskManager {
         let Some(handle) = self.scheduler.execution(task_id) else {
             return false;
         };
+        self.sleepers.remove(task_id);
         if !self.scheduler.exit_current() {
             return false;
         }
@@ -164,5 +186,32 @@ mod tests {
         assert!(manager.exit_current());
         assert!(!manager.executions.contains(handle));
         assert_eq!(manager.scheduler.state(task), None);
+    }
+
+    #[test]
+    fn sleeping_task_expires_without_switching_in_timer_service() {
+        let mut manager = KernelTaskManager::new();
+        let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
+        assert!(manager.prepare_dispatch().is_ok());
+        assert_eq!(manager.sleep_current_until(100).unwrap(), task);
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(manager.scheduler.current(), None);
+        assert_eq!(manager.next_sleep_deadline(), Some(100));
+        assert_eq!(manager.expire_sleepers(99), 0);
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(manager.expire_sleepers(100), 1);
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Ready));
+        assert_eq!(manager.scheduler.current(), None);
+    }
+
+    #[test]
+    fn exiting_task_cancels_pending_sleep() {
+        let mut manager = KernelTaskManager::new();
+        let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
+        assert!(manager.prepare_dispatch().is_ok());
+        assert_eq!(manager.sleep_current_until(100).unwrap(), task);
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(manager.next_sleep_deadline(), Some(100));
+        assert!(!manager.exit_current());
     }
 }
