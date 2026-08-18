@@ -64,8 +64,9 @@ extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mu
         Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToContext(context)) => unsafe {
             crate::arch::x86_64::preempt_return::return_to_context(&context);
         },
-        Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToKernel(state)) => unsafe {
-            crate::arch::x86_64::preempt_return::return_to_kernel(&state);
+        Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToKernel(state)) => {
+            crate::PREEMPT_IRET_RETURNED.store(true, core::sync::atomic::Ordering::Release);
+            unsafe { crate::arch::x86_64::preempt_return::return_to_kernel(&state); }
         },
         Ok(crate::arch::x86_64::runtime::InterruptPreemption::ResumeCurrent) | Err(_) => {}
     }
