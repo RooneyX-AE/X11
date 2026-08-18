@@ -71,7 +71,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // SAFETY: The bootloader established the complete physical-memory
         // direct mapping, and this mapper is initialized exactly once here.
         let mut mapper = unsafe {
-            memory::X86PageTableMapper::new(
+            arch::x86_64::page_table::X86PageTableMapper::new(
                 mapping.offset(),
                 &mut frame_allocator,
                 memory::KERNEL_ADDRESS_SPACE,
