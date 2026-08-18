@@ -94,7 +94,7 @@ pub unsafe fn enable_preferred_mode(capabilities: ApicCapabilities) -> Option<Ap
 
 #[inline]
 fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
-    let result = unsafe { core::arch::x86_64::__cpuid_count(leaf, subleaf) };
+    let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
     (result.eax, result.ebx, result.ecx, result.edx)
 }
 
