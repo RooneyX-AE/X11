@@ -92,7 +92,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     arch::x86_64::pic::mask_all();
                     serial::write_str("X11-OS: legacy 8259 masked\r\n");
 
-                    if let Some(mode) = apic.preferred_mode() {
+                    if apic.preferred_mode().is_some() {
                         // SAFETY: CPU interrupt delivery is not enabled yet,
                         // and the capability snapshot came directly from CPUID.
                         if let Some(mode) = unsafe {
