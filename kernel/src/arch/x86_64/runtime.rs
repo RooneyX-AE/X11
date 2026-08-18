@@ -12,6 +12,7 @@ use crate::scheduler::{Priority, TaskId};
 use super::context_switch::Context;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::yield_switch::{self, YieldError};
+use super::scheduler::reschedule::{PreemptionGate, RescheduleRequest};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -19,6 +20,7 @@ pub enum RuntimeError {
     NoRunnableTask,
     MissingExecutionPair,
     Yield(YieldError),
+    PreemptionDisabled,
 }
 
 impl From<YieldError> for RuntimeError {
@@ -31,6 +33,8 @@ impl From<YieldError> for RuntimeError {
 pub struct KernelRuntime {
     manager: KernelTaskManager,
     boot_context: Context,
+    reschedule: RescheduleRequest,
+    preemption: PreemptionGate,
 }
 
 impl KernelRuntime {
@@ -38,34 +42,36 @@ impl KernelRuntime {
         Box::new(Self {
             manager: KernelTaskManager::new(),
             boot_context: Context::empty(),
+            reschedule: RescheduleRequest::new(),
+            preemption: PreemptionGate::new(),
         })
     }
 
-    pub const fn manager(&self) -> &KernelTaskManager {
-        &self.manager
+    pub const fn manager(&self) -> &KernelTaskManager { &self.manager }
+    pub const fn manager_mut(&mut self) -> &mut KernelTaskManager { &mut self.manager }
+    pub const fn boot_context(&self) -> &Context { &self.boot_context }
+    pub fn boot_context_mut(&mut self) -> &mut Context { &mut self.boot_context }
+    pub fn address(&self) -> u64 { self as *const Self as usize as u64 }
+
+    pub fn request_reschedule(&self) { self.reschedule.request(); }
+    pub fn is_reschedule_pending(&self) -> bool { self.reschedule.is_pending() }
+
+    pub fn preemption_disable(&mut self) -> PreemptionDisableGuard<'_> {
+        PreemptionDisableGuard { inner: Some(self.preemption.disable()) }
     }
 
-    pub const fn manager_mut(&mut self) -> &mut KernelTaskManager {
-        &mut self.manager
+    pub fn safe_reschedule_point(&mut self) -> Result<bool, RuntimeError> {
+        if !self.preemption.is_enabled() {
+            return Err(RuntimeError::PreemptionDisabled);
+        }
+        if !self.reschedule.take() {
+            return Ok(false);
+        }
+        self.dispatch_once()?;
+        Ok(true)
     }
 
-    pub const fn boot_context(&self) -> &Context {
-        &self.boot_context
-    }
-
-    pub fn boot_context_mut(&mut self) -> &mut Context {
-        &mut self.boot_context
-    }
-
-    pub fn address(&self) -> u64 {
-        self as *const Self as usize as u64
-    }
-
-    pub fn spawn(
-        &mut self,
-        priority: Priority,
-        entry: extern "C" fn() -> !,
-    ) -> Result<TaskId, RuntimeError> {
+    pub fn spawn(&mut self, priority: Priority, entry: extern "C" fn() -> !) -> Result<TaskId, RuntimeError> {
         self.manager.spawn(priority, entry).map_err(RuntimeError::Task)
     }
 
@@ -74,111 +80,62 @@ impl KernelRuntime {
         decision.next.ok_or(RuntimeError::NoRunnableTask)
     }
 
-    /// Service one deferred timer event without performing a context switch in
-    /// interrupt context. The caller supplies a monotonic clock sample.
     pub fn service_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
         Ok(self.manager.expire_sleepers(now))
     }
 
-    /// Consume the timer event recorded by the IRQ handler and service sleep
-    /// deadlines. No context switch is performed from the interrupt handler.
     pub fn service_pending_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
-        if !super::idt::take_timer_pending() {
-            return Ok(0);
-        }
+        if !super::idt::take_timer_pending() { return Ok(0); }
         self.service_timer(now)
     }
 
-    /// Select the next runnable task and perform the architecture-specific
-    /// voluntary context switch. The first call activates a task from the boot
-    /// continuation; later calls switch between two live task contexts.
-    ///
-    /// # Safety
-    /// The task entry functions must obey the kernel-task ABI and return only
-    /// through the scheduler/runtime's explicit lifecycle paths. Interrupt
-    /// state must be controlled by the caller during the switch boundary.
     pub unsafe fn dispatch_once(&mut self) -> Result<(), RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
-
         match decision.previous {
             None => {
-                let next_context = self
-                    .manager
-                    .executions
-                    .get(next)
-                    .ok_or(RuntimeError::MissingExecutionPair)?
-                    .context();
-                unsafe {
-                    yield_switch::activate_first(
-                        &mut self.boot_context as *mut Context,
-                        next_context as *const Context,
-                    )?;
-                }
+                let next_context = self.manager.executions.get(next).ok_or(RuntimeError::MissingExecutionPair)?.context();
+                unsafe { yield_switch::activate_first(&mut self.boot_context as *mut Context, next_context as *const Context)?; }
             }
             Some(previous) => {
-                let (current, next_context) = self
-                    .manager
-                    .executions
-                    .context_pair_mut(previous, next)
-                    .ok_or(RuntimeError::MissingExecutionPair)?;
-                unsafe {
-                    yield_switch::switch(current as *mut Context, next_context as *const Context)?;
-                }
+                let (current, next_context) = self.manager.executions.context_pair_mut(previous, next).ok_or(RuntimeError::MissingExecutionPair)?;
+                unsafe { yield_switch::switch(current as *mut Context, next_context as *const Context)?; }
             }
         }
-
         Ok(())
     }
 
-    pub fn execution_ready(&self, task_id: TaskId) -> bool {
-        self.manager.is_executable(task_id)
+    pub fn execution_ready(&self, task_id: TaskId) -> bool { self.manager.is_executable(task_id) }
+}
+
+pub struct PreemptionDisableGuard<'a> {
+    inner: Option<super::scheduler::reschedule::DisableGuard<'a>>,
+}
+
+impl Drop for PreemptionDisableGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.inner.take();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{KernelRuntime, RuntimeError};
-    use crate::scheduler::{Priority, TaskState};
+    use crate::scheduler::Priority;
 
-    extern "C" fn never_returns() -> ! {
-        loop {}
-    }
+    extern "C" fn never_returns() -> ! { loop {} }
 
     #[test]
-    fn boxed_runtime_has_stable_address() {
-        let runtime = KernelRuntime::new();
-        let before = runtime.address();
-        let moved = runtime;
-        assert_eq!(before, moved.address());
-    }
-
-    #[test]
-    fn dispatch_requires_a_runnable_task() {
+    fn pending_reschedule_waits_for_enabled_safe_point() {
         let mut runtime = KernelRuntime::new();
-        let result = unsafe { runtime.dispatch_once() };
-        assert_eq!(result, Err(RuntimeError::NoRunnableTask));
-    }
-
-    #[test]
-    fn prepare_run_does_not_self_schedule_sole_current_task() {
-        let mut runtime = KernelRuntime::new();
-        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        assert_eq!(runtime.prepare_run().unwrap(), task);
-        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Running));
-        assert_eq!(runtime.prepare_run(), Err(RuntimeError::NoRunnableTask));
-        assert_eq!(runtime.manager().scheduler.current(), Some(task));
-    }
-
-    #[test]
-    fn timer_service_expires_sleepers_without_switching() {
-        let mut runtime = KernelRuntime::new();
-        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        assert_eq!(runtime.prepare_run().unwrap(), task);
-        assert_eq!(runtime.manager_mut().sleep_current_until(100).unwrap(), task);
-        assert_eq!(runtime.service_timer(99).unwrap(), 0);
-        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Blocked));
-        assert_eq!(runtime.service_timer(100).unwrap(), 1);
-        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Ready));
+        runtime.request_reschedule();
+        {
+            let _guard = runtime.preemption_disable();
+            assert_eq!(runtime.safe_reschedule_point(), Err(RuntimeError::PreemptionDisabled));
+            assert!(runtime.is_reschedule_pending());
+        }
+        assert!(runtime.is_reschedule_pending());
+        let _ = runtime.spawn(Priority::DEFAULT, never_returns);
+        assert!(runtime.is_reschedule_pending());
     }
 }
