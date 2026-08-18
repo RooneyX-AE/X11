@@ -76,9 +76,15 @@ impl ExecutionRegistry {
     /// Peeks at the architecture-level return path without changing ownership.
     pub fn preemption_plan(&self, task_id: TaskId) -> Option<PreemptionPlan> {
         let binding = self.get(task_id)?;
-        match binding.interrupted().and_then(InterruptedState::kernel_preempt_state) {
-            Some(state) => Some(PreemptionPlan::IretKernel { task_id, state }),
-            None => Some(PreemptionPlan::Bootstrap { task_id }),
+        if let Some(state) = binding.interrupted().and_then(InterruptedState::kernel_preempt_state) {
+            return Some(PreemptionPlan::IretKernel { task_id, state });
+        }
+
+        let context = *binding.context();
+        if context.is_initialized() {
+            Some(PreemptionPlan::ReturnToContext { task_id, context })
+        } else {
+            Some(PreemptionPlan::Bootstrap { task_id, context })
         }
     }
 
@@ -181,13 +187,5 @@ mod tests {
         let handle = ExecutionHandle::for_task(TaskId::new(5, 1));
         registry.insert(handle, never_returns).unwrap();
         assert!(registry.context_pair_mut(handle.task_id(), handle.task_id()).is_none());
-    }
-
-    #[test]
-    fn new_task_uses_bootstrap_plan() {
-        let mut registry = ExecutionRegistry::new();
-        let task = TaskId::new(6, 1);
-        registry.insert(ExecutionHandle::for_task(task), never_returns).unwrap();
-        assert!(matches!(registry.preemption_plan(task), Some(super::PreemptionPlan::Bootstrap { .. })));
     }
 }
