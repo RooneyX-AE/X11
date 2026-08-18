@@ -1,0 +1,91 @@
+//! Single-CPU A→B→A voluntary context-switch self-test.
+//!
+//! This is intentionally isolated from the timer path. It verifies that the
+//! saved continuation, kernel stacks, and context-switch ABI cooperate without
+//! requiring preemption or userspace state.
+
+use alloc::boxed::Box;
+use core::sync::atomic::{AtomicU8, Ordering};
+
+use crate::scheduler::TaskId;
+
+use super::activation::ActivationRecord;
+use super::context_switch::{bootstrap_context, switch, Context};
+
+const START: u8 = 0;
+const TASK_A: u8 = 1;
+const TASK_B: u8 = 2;
+const RETURNED_A: u8 = 3;
+
+#[repr(C)]
+struct TestState {
+    boot: Context,
+    a: Context,
+    b: Context,
+    state: AtomicU8,
+}
+
+extern "C" fn task_a() -> ! {
+    let state_ptr: *mut TestState;
+    unsafe {
+        core::arch::asm!("mov {}, r13", out(reg) state_ptr, options(nomem, nostack, preserves_flags));
+        (*state_ptr).state.store(TASK_A, Ordering::SeqCst);
+        switch(&mut (*state_ptr).a, &(*state_ptr).b);
+        (*state_ptr).state.store(RETURNED_A, Ordering::SeqCst);
+        switch(&mut (*state_ptr).a, &(*state_ptr).boot);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+extern "C" fn task_b() -> ! {
+    let state_ptr: *mut TestState;
+    unsafe {
+        core::arch::asm!("mov {}, r13", out(reg) state_ptr, options(nomem, nostack, preserves_flags));
+        (*state_ptr).state.store(TASK_B, Ordering::SeqCst);
+        switch(&mut (*state_ptr).b, &(*state_ptr).a);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+pub fn run() -> bool {
+    let mut state = Box::new(TestState {
+        boot: Context::empty(),
+        a: Context::empty(),
+        b: Context::empty(),
+        state: AtomicU8::new(START),
+    });
+    let mut stack_a = Box::new([0u8; 16 * 1024]);
+    let mut stack_b = Box::new([0u8; 16 * 1024]);
+    let activation_a = ActivationRecord::new(TaskId::new(0, 1), task_a);
+    let activation_b = ActivationRecord::new(TaskId::new(1, 1), task_b);
+
+    let state_ptr = (&mut *state) as *mut TestState as u64;
+    let top_a = stack_a.as_mut_ptr() as usize + stack_a.len();
+    let top_b = stack_b.as_mut_ptr() as usize + stack_b.len();
+
+    let mut a = match bootstrap_context(top_a as u64, &activation_a, super::context_switch::task_entry_trampoline) {
+        Some(context) => context,
+        None => return false,
+    };
+    let mut b = match bootstrap_context(top_b as u64, &activation_b, super::context_switch::task_entry_trampoline) {
+        Some(context) => context,
+        None => return false,
+    };
+
+    // r12 remains the activation-record pointer consumed by the shared
+    // trampoline. r13 carries the self-test state pointer to the task entry.
+    a.r13 = state_ptr;
+    b.r13 = state_ptr;
+    state.a = a;
+    state.b = b;
+
+    unsafe {
+        switch(&mut state.boot, &state.a);
+    }
+
+    state.state.load(Ordering::SeqCst) == RETURNED_A
+}
