@@ -7,7 +7,7 @@
 
 use core::arch::x86_64::{__cpuid, __cpuid_count, _rdtsc};
 
-use crate::timer::MonotonicTime;
+use crate::timer::{Clocksource, MonotonicTime};
 
 const INVARIANT_TSC_BIT: u32 = 1 << 8;
 const CPUID_EXTENDED_MAX: u32 = 0x8000_0000;
@@ -19,7 +19,6 @@ const CPUID_EXTENDED_FEATURES: u32 = 0x8000_0007;
 pub enum TscError {
     Unsupported,
     FrequencyUnavailable,
-    InvalidRatio,
     FrequencyOverflow,
     TimeOverflow,
 }
@@ -64,8 +63,12 @@ impl TscClocksource {
     pub const fn frequency(self) -> TscFrequency {
         self.frequency
     }
+}
 
-    pub fn now(self) -> Result<MonotonicTime, TscError> {
+impl Clocksource for TscClocksource {
+    type Error = TscError;
+
+    fn now(&self) -> Result<MonotonicTime, Self::Error> {
         let ticks = unsafe {
             // SAFETY: See `try_new`; the CPU supports x86_64 RDTSC.
             _rdtsc()
@@ -108,15 +111,18 @@ fn detect_frequency() -> Result<TscFrequency, TscError> {
         };
         let denominator = ratio.eax;
         let numerator = ratio.ebx;
-        let crystal_hz = (ratio.ecx as u64);
+        let crystal_hz = ratio.ecx as u64;
 
         if denominator != 0 && numerator != 0 && crystal_hz != 0 {
             let hz = crystal_hz
                 .checked_mul(numerator as u64)
-                .and_then(|value| value.checked_div(denominator as u64))
-                .ok_or(TscError::FrequencyOverflow)?;
-            if hz != 0 {
-                return Ok(TscFrequency { hz });
+                .and_then(|value| value.checked_div(denominator as u64));
+            if let Some(hz) = hz {
+                if hz != 0 {
+                    return Ok(TscFrequency { hz });
+                }
+            } else {
+                return Err(TscError::FrequencyOverflow);
             }
         }
     }
@@ -147,7 +153,8 @@ fn ticks_to_nanos(ticks: u64, frequency_hz: u64) -> Option<u64> {
     let seconds = ticks / frequency_hz;
     let remainder = ticks % frequency_hz;
     let whole_nanos = seconds.checked_mul(1_000_000_000)?;
-    let fractional_nanos = ((remainder as u128) * 1_000_000_000u128 / frequency_hz as u128) as u64;
+    let fractional_nanos =
+        ((remainder as u128) * 1_000_000_000u128 / frequency_hz as u128) as u64;
     whole_nanos.checked_add(fractional_nanos)
 }
 
@@ -157,7 +164,10 @@ mod tests {
 
     #[test]
     fn converts_exact_second() {
-        assert_eq!(ticks_to_nanos(3_000_000_000, 3_000_000_000), Some(1_000_000_000));
+        assert_eq!(
+            ticks_to_nanos(3_000_000_000, 3_000_000_000),
+            Some(1_000_000_000)
+        );
     }
 
     #[test]
