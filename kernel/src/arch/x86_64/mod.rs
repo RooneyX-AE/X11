@@ -18,7 +18,6 @@ pub mod irq_routing;
 pub mod kernel_task;
 pub mod lapic_timer;
 pub mod local_apic;
-pub prelude;
 pub mod preemption;
 pub mod preempt_return;
 pub mod preemption_plan;
