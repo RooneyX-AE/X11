@@ -165,7 +165,7 @@ impl FrameAllocator for EarlyFrameAllocator<'_> {
     }
 }
 
-const fn align_up(address: u64) -> Option<u64> {
+fn align_up(address: u64) -> Option<u64> {
     let mask = FRAME_SIZE - 1;
     address.checked_add(mask).map(|value| value & !mask)
 }
