@@ -40,8 +40,8 @@ pub trait FrameAllocator {
 
 /// Deterministic early-boot allocator that walks usable memory regions once.
 pub struct EarlyFrameAllocator<'a> {
-    regions: &'a MemoryRegions,
-    region_index: usize,
+    regions: core::slice::Iter<'a, MemoryRegion>,
+    current_end: u64,
     next_address: u64,
 }
 
@@ -49,17 +49,14 @@ impl<'a> EarlyFrameAllocator<'a> {
     /// Creates an allocator over a bootloader-provided memory map.
     pub fn new(regions: &'a MemoryRegions) -> Self {
         Self {
-            regions,
-            region_index: 0,
+            regions: regions.iter(),
+            current_end: 0,
             next_address: 0,
         }
     }
 
-    fn advance_to_usable_region(&mut self) -> Option<PhysRange> {
-        while self.region_index < self.regions.len() {
-            let region: &MemoryRegion = &self.regions[self.region_index];
-            self.region_index += 1;
-
+    fn select_next_usable_region(&mut self) -> bool {
+        for region in &mut self.regions {
             if region.kind != MemoryRegionKind::Usable {
                 continue;
             }
@@ -68,51 +65,60 @@ impl<'a> EarlyFrameAllocator<'a> {
                 continue;
             };
 
-            let start = align_up(range.start());
+            let Some(start) = align_up(range.start()) else {
+                continue;
+            };
+
             if start >= range.end() {
                 continue;
             }
 
             self.next_address = start;
-            return Some(range);
+            self.current_end = range.end();
+            return true;
         }
 
-        None
+        false
     }
 }
 
 impl FrameAllocator for EarlyFrameAllocator<'_> {
     fn allocate_frame(&mut self) -> Option<Frame> {
         loop {
-            let current = if self.region_index == 0 || self.next_address == 0 {
-                self.advance_to_usable_region()?
-            } else {
-                let previous = self.region_index.saturating_sub(1);
-                &self.regions[previous]
-            };
-
-            if self.next_address < current.end {
+            if self.next_address < self.current_end {
                 let frame = Frame::from_start_address(self.next_address)?;
                 self.next_address = self.next_address.checked_add(FRAME_SIZE)?;
                 return Some(frame);
             }
 
             self.next_address = 0;
-            if self.region_index >= self.regions.len() {
+            self.current_end = 0;
+
+            if !self.select_next_usable_region() {
                 return None;
             }
         }
     }
 }
 
-const fn align_up(address: u64) -> u64 {
+const fn align_up(address: u64) -> Option<u64> {
     let mask = FRAME_SIZE - 1;
-    address.checked_add(mask).map_or(u64::MAX, |value| value & !mask)
+    address.checked_add(mask).map(|value| value & !mask)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FRAME_SIZE, Frame};
+    use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+
+    use super::{EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE};
+
+    fn regions(items: &'static mut [MemoryRegion]) -> bootloader_api::info::MemoryRegions {
+        items.into()
+    }
+
+    fn region(start: u64, end: u64, kind: MemoryRegionKind) -> MemoryRegion {
+        MemoryRegion { start, end, kind }
+    }
 
     #[test]
     fn aligned_address_constructs_frame() {
@@ -128,5 +134,34 @@ mod tests {
     #[test]
     fn frame_size_is_4k() {
         assert_eq!(FRAME_SIZE, 4096);
+    }
+
+    #[test]
+    fn allocator_skips_reserved_regions() {
+        let items = Box::leak(Box::new([
+            region(0x0000, 0x2000, MemoryRegionKind::Reserved),
+            region(0x3000, 0x6000, MemoryRegionKind::Usable),
+        ]));
+        let regions = regions(items);
+        let mut allocator = EarlyFrameAllocator::new(&regions);
+
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x3000);
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x4000);
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x5000);
+        assert!(allocator.allocate_frame().is_none());
+    }
+
+    #[test]
+    fn allocator_aligns_region_start_up() {
+        let items = Box::leak(Box::new([region(
+            0x1001,
+            0x3000,
+            MemoryRegionKind::Usable,
+        )]));
+        let regions = regions(items);
+        let mut allocator = EarlyFrameAllocator::new(&regions);
+
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x2000);
+        assert!(allocator.allocate_frame().is_none());
     }
 }
