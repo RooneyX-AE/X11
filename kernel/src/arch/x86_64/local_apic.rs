@@ -1,9 +1,10 @@
 //! x86_64 Local APIC EOI backend.
 //!
-//! The EOI register differs between xAPIC and x2APIC. xAPIC exposes it via
-//! MMIO at offset 0xB0 from the local APIC base; x2APIC exposes it through
-//! the IA32_X2APIC_EOI MSR (0x80B). The constructor validates the MMIO
-//! mapping boundary for xAPIC before exposing a safe `end_of_interrupt`.
+//! xAPIC exposes EOI through MMIO while x2APIC exposes it through an MSR.
+//! Initialization stores only immutable hardware configuration so interrupt
+//! handlers never need a mutex or mutable global state.
+
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use x86_64::registers::model_specific::{ApicBase, Msr};
 
@@ -14,113 +15,102 @@ use super::apic::ApicMode;
 
 const LOCAL_APIC_EOI_OFFSET: u64 = 0xB0;
 const IA32_X2APIC_EOI: u32 = 0x80B;
+const MODE_UNINITIALIZED: u8 = 0;
+const MODE_XAPIC: u8 = 1;
+const MODE_X2APIC: u8 = 2;
+
+static MODE: AtomicU8 = AtomicU8::new(MODE_UNINITIALIZED);
+static PHYSICAL_MAPPING_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalApicError {
     UnsupportedMode,
     InvalidMmioAddress,
+    AlreadyInitialized,
 }
 
-/// Hardware-bound EOI writer for the current CPU.
-pub struct LocalApic {
+/// Initializes the per-CPU-independent EOI configuration.
+///
+/// # Safety
+///
+/// The caller must ensure the selected APIC mode is active, the physical map
+/// covers the Local APIC MMIO page for xAPIC mode, and interrupts stay disabled
+/// until this configuration is complete.
+pub unsafe fn initialize(
     mode: ApicMode,
-    eoi_mmio: Option<*mut u32>,
-    x2apic_eoi: Msr,
-}
+    mapping: Option<PhysicalMemoryMapping>,
+) -> Result<(), LocalApicError> {
+    if MODE.load(Ordering::Acquire) != MODE_UNINITIALIZED {
+        return Err(LocalApicError::AlreadyInitialized);
+    }
 
-unsafe impl Send for LocalApic {}
-
-impl LocalApic {
-    /// Constructs a Local APIC EOI writer.
-    ///
-    /// # Safety
-    ///
-    /// `mode` must reflect the current IA32_APIC_BASE mode, and when `mode`
-    /// is `XApic`, `mapping` must cover the bootloader-provided Local APIC
-    /// physical frame. The caller must also keep the Local APIC hardware
-    /// configuration stable for this object's lifetime.
-    pub unsafe fn new(
-        mode: ApicMode,
-        mapping: Option<PhysicalMemoryMapping>,
-    ) -> Result<Self, LocalApicError> {
-        let eoi_mmio = match mode {
-            ApicMode::XApic => {
-                let Some(mapping) = mapping else {
-                    return Err(LocalApicError::UnsupportedMode);
-                };
-                let (frame, _) = ApicBase::read();
-                let physical = frame
-                    .start_address()
-                    .as_u64()
-                    .checked_add(LOCAL_APIC_EOI_OFFSET)
-                    .ok_or(LocalApicError::InvalidMmioAddress)?;
-                let virtual_address = mapping
-                    .translate(physical)
-                    .ok_or(LocalApicError::InvalidMmioAddress)?;
-                Some(virtual_address as *mut u32)
-            }
-            ApicMode::X2Apic => None,
+    if matches!(mode, ApicMode::XApic) {
+        let Some(mapping) = mapping else {
+            return Err(LocalApicError::UnsupportedMode);
         };
-
-        Ok(Self {
-            mode,
-            eoi_mmio,
-            x2apic_eoi: Msr::new(IA32_X2APIC_EOI),
-        })
+        let (frame, _) = ApicBase::read();
+        let physical = frame
+            .start_address()
+            .as_u64()
+            .checked_add(LOCAL_APIC_EOI_OFFSET)
+            .ok_or(LocalApicError::InvalidMmioAddress)?;
+        mapping
+            .translate(physical)
+            .ok_or(LocalApicError::InvalidMmioAddress)?;
+        PHYSICAL_MAPPING_OFFSET.store(mapping.offset(), Ordering::Release);
     }
 
-    pub const fn mode(&self) -> ApicMode {
-        self.mode
-    }
+    let mode_value = match mode {
+        ApicMode::XApic => MODE_XAPIC,
+        ApicMode::X2Apic => MODE_X2APIC,
+    };
+    MODE.store(mode_value, Ordering::Release);
+    Ok(())
+}
 
-    /// Signals completion of an external interrupt on the current CPU.
-    ///
-    /// Exceptions do not use the APIC EOI mechanism and are ignored here.
-    pub fn end_of_interrupt(&mut self, event: InterruptEvent) {
-        if !matches!(
-            event.source(),
-            InterruptSource::External(_)
-                | InterruptSource::Timer
-                | InterruptSource::InterProcessor(_)
-                | InterruptSource::Spurious
-        ) {
-            return;
-        }
-
-        match self.mode {
-            ApicMode::XApic => {
-                let Some(address) = self.eoi_mmio else {
-                    return;
-                };
-                // SAFETY: The constructor proved the address comes from the
-                // Local APIC physical base plus the architectural EOI offset.
-                unsafe { core::ptr::write_volatile(address, 0) };
-            }
-            ApicMode::X2Apic => {
-                // SAFETY: The object is only constructible for x2APIC mode and
-                // IA32_X2APIC_EOI is architecturally defined for that mode.
-                unsafe { self.x2apic_eoi.write(0) };
-            }
-        }
+pub fn mode() -> Option<ApicMode> {
+    match MODE.load(Ordering::Acquire) {
+        MODE_XAPIC => Some(ApicMode::XApic),
+        MODE_X2APIC => Some(ApicMode::X2Apic),
+        _ => None,
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{LocalApic, LocalApicError};
-    use crate::arch::x86_64::apic::ApicMode;
-
-    #[test]
-    fn x2apic_does_not_require_mmio_mapping() {
-        // Construction itself performs an APIC base read, so this test only
-        // runs meaningfully in kernel execution. Keep the architectural mode
-        // mapping policy covered without touching hardware in unit tests.
-        let _ = ApicMode::X2Apic;
-        let _ = LocalApicError::UnsupportedMode;
+/// Signals completion of an APIC-delivered interrupt on the current CPU.
+pub fn end_of_interrupt(event: InterruptEvent) {
+    if !matches!(
+        event.source(),
+        InterruptSource::External(_)
+            | InterruptSource::Timer
+            | InterruptSource::InterProcessor(_)
+            | InterruptSource::Spurious
+    ) {
+        return;
     }
 
-    #[allow(dead_code)]
-    fn _type_is_hardware_bound(value: &LocalApic) -> ApicMode {
-        value.mode()
+    match MODE.load(Ordering::Acquire) {
+        MODE_XAPIC => {
+            let mapping_offset = PHYSICAL_MAPPING_OFFSET.load(Ordering::Acquire);
+            let (frame, _) = ApicBase::read();
+            let Some(physical) = frame
+                .start_address()
+                .as_u64()
+                .checked_add(LOCAL_APIC_EOI_OFFSET)
+            else {
+                return;
+            };
+            let Some(virtual_address) = mapping_offset.checked_add(physical) else {
+                return;
+            };
+            // SAFETY: initialization validated the direct-map translation for
+            // the Local APIC EOI register and the configuration is immutable.
+            unsafe { core::ptr::write_volatile(virtual_address as *mut u32, 0) };
+        }
+        MODE_X2APIC => {
+            let eoi = Msr::new(IA32_X2APIC_EOI);
+            // SAFETY: x2APIC mode was selected during initialization.
+            unsafe { eoi.write(0) };
+        }
+        _ => {}
     }
 }
