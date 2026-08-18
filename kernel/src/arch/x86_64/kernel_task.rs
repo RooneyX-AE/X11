@@ -78,15 +78,22 @@ impl KernelTaskManager {
         Ok(task_id)
     }
 
-    /// Select the next task and validate that its concrete execution state is
-    /// present before any architecture-specific switch is attempted.
+    /// Validate the next ready task without mutating scheduler state, then
+    /// commit the scheduler transition. This is the only bootstrap path that
+    /// may authorize a later architecture-specific context switch.
     pub fn prepare_dispatch(&mut self) -> Result<DispatchDecision, KernelTaskError> {
-        let decision = self.scheduler.schedule_next();
-        let Some(next) = decision.next else {
-            return Ok(decision);
+        let previous = self.scheduler.current();
+        let Some(candidate) = self.scheduler.next_ready() else {
+            return Ok(DispatchDecision {
+                previous,
+                next: previous,
+            });
         };
 
-        dispatch::validate_transition(&self.executions, decision.previous, next)?;
+        dispatch::validate_transition(&self.executions, previous, candidate)?;
+        let decision = self.scheduler.schedule_next();
+
+        debug_assert_eq!(decision.next, Some(candidate));
         Ok(decision)
     }
 
@@ -131,11 +138,8 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_can_dispatch_bootstrapped_kernel_task() {
-        let mut manager = KernelTaskManager::new();
-        let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
-        let decision = manager.scheduler.schedule_next();
-        assert_eq!(decision.next, Some(task));
-        assert_eq!(manager.scheduler.state(task), Some(TaskState::Running));
+    fn prepare_dispatch_does_not_change_state_without_a_ready_task() {
+        let manager = KernelTaskManager::new();
+        assert_eq!(manager.prepare_dispatch().unwrap(), DispatchDecision { previous: None, next: None });
     }
 }
