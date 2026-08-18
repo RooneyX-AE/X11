@@ -37,6 +37,9 @@ impl Context {
     }
 }
 
+const _: () = assert!(core::mem::size_of::<Context>() == 64);
+const _: () = assert!(core::mem::align_of::<Context>() == 8);
+
 /// Switches from `current` to `next` and resumes the saved continuation.
 ///
 /// # Safety
@@ -104,6 +107,12 @@ mod tests {
     #[test]
     fn context_is_zero_before_initialization() {
         assert!(!Context::empty().is_initialized());
+    }
+
+    #[test]
+    fn context_layout_is_stable() {
+        assert_eq!(core::mem::size_of::<Context>(), 64);
+        assert_eq!(core::mem::align_of::<Context>(), 8);
     }
 
     #[test]
