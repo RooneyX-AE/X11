@@ -12,7 +12,7 @@ use crate::scheduler::{ExecutionBinding, ExecutionHandle, TaskId};
 
 use super::context_switch::Context;
 use super::execution::{ExecutionError, X86ExecutionBinding};
-use super::interrupted_state::{InterruptedState, KernelPreemptState};
+use super::interrupted_state::InterruptedState;
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 use super::preemption_plan::PreemptionPlan;
 
@@ -73,19 +73,20 @@ impl ExecutionRegistry {
         binding.interrupted().ok_or(InterruptCaptureError::Execution(ExecutionError::InvalidStack))
     }
 
-    pub fn preemption_plan(&self, task_id: TaskId) -> Option<PreemptionPlan> {
-        let binding = self.get(task_id)?;
-        match binding.interrupted().and_then(InterruptedState::kernel_preempt_state) {
-            Some(state) => Some(PreemptionPlan::IretKernel { task_id, state }),
-            None => Some(PreemptionPlan::Bootstrap { task_id }),
+    /// Selects the architecture-level return path for a runnable task.
+    ///
+    /// A previously interrupted snapshot is consumed only when it is actually
+    /// converted into an IRET return state. This prevents a resumed task from
+    /// retaining stale interrupted-state ownership and rejecting its next timer
+    /// interrupt as a duplicate snapshot.
+    pub fn preemption_plan(&mut self, task_id: TaskId) -> Option<PreemptionPlan> {
+        let binding = self.get_mut(task_id)?;
+        if let Some(snapshot) = binding.interrupted() {
+            let state = snapshot.kernel_preempt_state()?;
+            let _ = binding.take_interrupted();
+            return Some(PreemptionPlan::IretKernel { task_id, state });
         }
-    }
-
-    /// Consumes a task-owned interrupted snapshot for an actual iret transfer.
-    /// Keeping this destructive prevents stale state from being used as the
-    /// restore image after the task has already resumed.
-    pub fn take_kernel_preempt_state(&mut self, task_id: TaskId) -> Option<KernelPreemptState> {
-        self.get_mut(task_id)?.take_interrupted()?.kernel_preempt_state()
+        Some(PreemptionPlan::Bootstrap { task_id })
     }
 
     pub fn context_pair_mut(&mut self, current: TaskId, next: TaskId) -> Option<(&mut Context, &Context)> {
