@@ -51,8 +51,18 @@ pub struct KernelPreemptState {
     pub resume_rsp: u64,
 }
 
+const KERNEL_PREEMPT_RIP_OFFSET: usize = core::mem::offset_of!(KernelPreemptState, rip);
+const KERNEL_PREEMPT_CS_OFFSET: usize = core::mem::offset_of!(KernelPreemptState, cs);
+const KERNEL_PREEMPT_RFLAGS_OFFSET: usize = core::mem::offset_of!(KernelPreemptState, rflags);
+const KERNEL_PREEMPT_RESUME_RSP_OFFSET: usize = core::mem::offset_of!(KernelPreemptState, resume_rsp);
+
 const _: () = assert!(core::mem::size_of::<KernelPreemptState>() == 152);
 const _: () = assert!(core::mem::align_of::<KernelPreemptState>() == 8);
+// These offsets are part of the assembly ABI in preempt_return.rs.
+const _: () = assert!(KERNEL_PREEMPT_RIP_OFFSET == 120);
+const _: () = assert!(KERNEL_PREEMPT_CS_OFFSET == 128);
+const _: () = assert!(KERNEL_PREEMPT_RFLAGS_OFFSET == 136);
+const _: () = assert!(KERNEL_PREEMPT_RESUME_RSP_OFFSET == 144);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterruptedState {
