@@ -13,12 +13,18 @@ use alloc::vec::Vec;
 
 pub use execution::{ExecutionBinding, ExecutionHandle, ExecutionState};
 pub use run_queue::RunQueue;
-pub use task::{Priority, TaskControlBlock, TaskId, TaskState};
+pub use task::{ExecutionAttachError, Priority, TaskControlBlock, TaskId, TaskState};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DispatchDecision {
     pub previous: Option<TaskId>,
     pub next: Option<TaskId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchedulerError {
+    TaskNotFound,
+    ExecutionAlreadyAttached,
 }
 
 #[derive(Debug, Default)]
@@ -63,8 +69,12 @@ impl Scheduler {
         id
     }
 
-    pub fn attach_execution(&mut self, id: TaskId) -> Option<ExecutionHandle> {
-        self.task_mut(id).map(TaskControlBlock::attach_execution)
+    pub fn attach_execution(&mut self, id: TaskId) -> Result<ExecutionHandle, SchedulerError> {
+        let task = self.task_mut(id).ok_or(SchedulerError::TaskNotFound)?;
+        task.attach_execution()
+            .map_err(|error| match error {
+                ExecutionAttachError::AlreadyAttached => SchedulerError::ExecutionAlreadyAttached,
+            })
     }
 
     pub fn execution(&self, id: TaskId) -> Option<ExecutionHandle> {
@@ -184,7 +194,7 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::{Priority, Scheduler, TaskState};
+    use super::{Priority, Scheduler, SchedulerError, TaskState};
 
     #[test]
     fn scheduler_dispatches_ready_tasks_fifo() {
@@ -207,8 +217,21 @@ mod tests {
     fn scheduler_tracks_execution_handle() {
         let mut scheduler = Scheduler::new();
         let task = scheduler.create_task(Priority::DEFAULT);
-        let handle = scheduler.attach_execution(task).expect("task must exist");
+        let handle = scheduler.attach_execution(task).unwrap();
         assert_eq!(scheduler.execution(task), Some(handle));
+        assert_eq!(
+            scheduler.attach_execution(task),
+            Err(SchedulerError::ExecutionAlreadyAttached)
+        );
+    }
+
+    #[test]
+    fn scheduler_rejects_execution_for_unknown_task() {
+        let mut scheduler = Scheduler::new();
+        assert_eq!(
+            scheduler.attach_execution(super::TaskId::new(99, 1)),
+            Err(SchedulerError::TaskNotFound)
+        );
     }
 
     #[test]
