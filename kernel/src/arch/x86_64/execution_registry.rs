@@ -8,13 +8,15 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::scheduler::{ExecutionBinding, TaskId};
+use crate::scheduler::{ExecutionBinding, ExecutionHandle, TaskId};
 
 use super::execution::{ExecutionError, X86ExecutionBinding};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum RegistryError {
-    TaskAlreadyBound,
+pub enum RegistryInsertError {
+    AlreadyBound,
+    HandleTaskMismatch,
+    Allocation,
 }
 
 #[derive(Debug, Default)]
@@ -29,16 +31,17 @@ impl ExecutionRegistry {
 
     pub fn insert(
         &mut self,
-        task_id: TaskId,
+        handle: ExecutionHandle,
         entry: extern "C" fn() -> !,
     ) -> Result<(), RegistryInsertError> {
+        let task_id = handle.task_id();
         if self.get(task_id).is_some() {
             return Err(RegistryInsertError::AlreadyBound);
         }
 
         let binding = Box::new(
             X86ExecutionBinding::new(task_id, entry)
-                .map_err(RegistryInsertError::Allocation)?,
+                .map_err(|_: ExecutionError| RegistryInsertError::Allocation)?,
         );
 
         if let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) {
@@ -50,7 +53,8 @@ impl ExecutionRegistry {
         Ok(())
     }
 
-    pub fn remove(&mut self, task_id: TaskId) -> bool {
+    pub fn remove(&mut self, handle: ExecutionHandle) -> bool {
+        let task_id = handle.task_id();
         let Some(slot) = self
             .entries
             .iter_mut()
@@ -76,84 +80,84 @@ impl ExecutionRegistry {
             .find(|binding| binding.task_id() == task_id)
     }
 
+    pub fn contains(&self, handle: ExecutionHandle) -> bool {
+        self.get(handle.task_id()).is_some()
+    }
+
     pub fn count(&self) -> usize {
         self.entries.iter().filter(|entry| entry.is_some()).count()
     }
 
-    pub fn is_valid(&self, task_id: TaskId) -> bool {
-        self.get(task_id)
+    pub fn is_valid(&self, handle: ExecutionHandle) -> bool {
+        self.get(handle.task_id())
             .map(|binding| binding.validate().is_ok())
             .unwrap_or(false)
     }
 }
 
-#[derive(Debug)]
-pub enum RegistryInsertError {
-    AlreadyBound,
-    Allocation(ExecutionError),
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ExecutionRegistry, RegistryInsertError};
-    use crate::scheduler::TaskId;
+    use crate::scheduler::{ExecutionHandle, TaskId};
 
     extern "C" fn never_returns() -> ! {
         loop {}
     }
 
     #[test]
-    fn registry_owns_one_execution_binding_per_task() {
+    fn registry_owns_one_execution_binding_per_handle() {
         let mut registry = ExecutionRegistry::new();
-        let task = TaskId::new(1, 1);
-        registry.insert(task, never_returns).unwrap();
+        let handle = ExecutionHandle::for_task(TaskId::new(1, 1));
+        registry.insert(handle, never_returns).unwrap();
         assert_eq!(registry.count(), 1);
-        assert!(registry.is_valid(task));
+        assert!(registry.contains(handle));
+        assert!(registry.is_valid(handle));
     }
 
     #[test]
-    fn duplicate_task_binding_is_rejected() {
+    fn duplicate_handle_is_rejected() {
         let mut registry = ExecutionRegistry::new();
-        let task = TaskId::new(1, 1);
-        registry.insert(task, never_returns).unwrap();
-        assert!(matches!(
-            registry.insert(task, never_returns),
+        let handle = ExecutionHandle::for_task(TaskId::new(1, 1));
+        registry.insert(handle, never_returns).unwrap();
+        assert_eq!(
+            registry.insert(handle, never_returns),
             Err(RegistryInsertError::AlreadyBound)
-        ));
+        );
     }
 
     #[test]
     fn stale_generation_does_not_match_reused_index() {
         let mut registry = ExecutionRegistry::new();
-        let old = TaskId::new(2, 1);
-        let new = TaskId::new(2, 2);
+        let old = ExecutionHandle::for_task(TaskId::new(2, 1));
+        let new = ExecutionHandle::for_task(TaskId::new(2, 2));
         registry.insert(old, never_returns).unwrap();
-        assert!(registry.get(old).is_some());
-        assert!(registry.get(new).is_none());
+        assert!(registry.contains(old));
+        assert!(!registry.contains(new));
     }
 
     #[test]
     fn removing_execution_is_terminal_for_that_handle() {
         let mut registry = ExecutionRegistry::new();
-        let task = TaskId::new(3, 9);
-        registry.insert(task, never_returns).unwrap();
-        assert!(registry.remove(task));
-        assert!(registry.get(task).is_none());
+        let handle = ExecutionHandle::for_task(TaskId::new(3, 9));
+        registry.insert(handle, never_returns).unwrap();
+        assert!(registry.remove(handle));
+        assert!(!registry.contains(handle));
         assert_eq!(registry.count(), 0);
     }
 
     #[test]
     fn boxed_entry_address_survives_registry_growth() {
         let mut registry = ExecutionRegistry::new();
-        let first = TaskId::new(4, 1);
+        let first = ExecutionHandle::for_task(TaskId::new(4, 1));
         registry.insert(first, never_returns).unwrap();
-        let before = registry.get(first).unwrap() as *const _;
+        let before = registry.get(first.task_id()).unwrap() as *const _;
 
         for index in 5..128u32 {
-            registry.insert(TaskId::new(index, 1), never_returns).unwrap();
+            let handle = ExecutionHandle::for_task(TaskId::new(index, 1));
+            registry.insert(handle, never_returns).unwrap();
         }
 
-        let after = registry.get(first).unwrap() as *const _;
+        let after = registry.get(first.task_id()).unwrap() as *const _;
         assert_eq!(before, after);
     }
 }
