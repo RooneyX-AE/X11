@@ -5,6 +5,7 @@
 //! ownership.
 
 mod address_space;
+mod address_space_builder;
 mod identity;
 mod image;
 mod image_state;
@@ -19,6 +20,7 @@ mod stack;
 mod state;
 
 pub use address_space::{AddressSpaceError, AddressSpaceId, AddressSpaceSpec};
+pub use address_space_builder::{build_address_space, AddressSpaceBuildError, BuiltAddressSpace};
 pub use identity::{ProcessExecutionBinding, ProcessId};
 pub use image::{ElfError, ElfImage, LoadSegment};
 pub use image_state::{ProcessImage, ProcessImageError};
