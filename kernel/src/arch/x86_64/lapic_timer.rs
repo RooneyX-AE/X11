@@ -6,7 +6,7 @@
 
 use crate::interrupts::TIMER_VECTOR;
 use crate::memory::PhysicalMemoryMapping;
-use crate::timer::{Clocksource, MonotonicTime, TimerDeadline, TimerDevice, TimerInterval};
+use crate::timer::{MonotonicTime, TimerDeadline, TimerDevice, TimerInterval};
 use x86_64::registers::model_specific::Msr;
 
 use super::apic::ApicMode;
@@ -184,26 +184,26 @@ impl LapicTimer {
         Ok(frequency)
     }
 
-    unsafe fn write_lvt(&self, value: u32) -> Result<(), LapicTimerError> {
-        self.write_register(LVT_TIMER_OFFSET, self.lvt_timer, value)
+    unsafe fn write_lvt(&mut self, value: u32) -> Result<(), LapicTimerError> {
+        unsafe { self.write_register(LVT_TIMER_OFFSET, self.lvt_timer.as_mut(), value) }
     }
 
-    unsafe fn write_initial(&self, value: u32) -> Result<(), LapicTimerError> {
-        self.write_register(TIMER_INIT_COUNT_OFFSET, self.init_count, value)
+    unsafe fn write_initial(&mut self, value: u32) -> Result<(), LapicTimerError> {
+        unsafe { self.write_register(TIMER_INIT_COUNT_OFFSET, self.init_count.as_mut(), value) }
     }
 
-    unsafe fn write_divide(&self, value: u32) -> Result<(), LapicTimerError> {
-        self.write_register(TIMER_DIVIDE_OFFSET, self.divide_config, value)
+    unsafe fn write_divide(&mut self, value: u32) -> Result<(), LapicTimerError> {
+        unsafe { self.write_register(TIMER_DIVIDE_OFFSET, self.divide_config.as_mut(), value) }
     }
 
-    unsafe fn read_current(&self) -> Result<u32, LapicTimerError> {
-        self.read_register(TIMER_CURRENT_COUNT_OFFSET, self.current_count)
+    unsafe fn read_current(&mut self) -> Result<u32, LapicTimerError> {
+        unsafe { self.read_register(TIMER_CURRENT_COUNT_OFFSET, self.current_count.as_mut()) }
     }
 
     unsafe fn write_register(
-        &self,
+        &mut self,
         offset: u64,
-        msr: Option<Msr>,
+        msr: Option<&mut Msr>,
         value: u32,
     ) -> Result<(), LapicTimerError> {
         match self.mode {
@@ -229,9 +229,9 @@ impl LapicTimer {
     }
 
     unsafe fn read_register(
-        &self,
+        &mut self,
         offset: u64,
-        msr: Option<Msr>,
+        msr: Option<&mut Msr>,
     ) -> Result<u32, LapicTimerError> {
         match self.mode {
             ApicMode::XApic => {
@@ -267,10 +267,7 @@ impl LapicTimer {
 }
 
 fn tsc_deadline_supported() -> bool {
-    let leaf = unsafe {
-        // SAFETY: CPUID leaf 1 is architectural on x86_64.
-        core::arch::x86_64::__cpuid(CPUID_TSC_DEADLINE)
-    };
+    let leaf = core::arch::x86_64::__cpuid(CPUID_TSC_DEADLINE);
     leaf.ecx & TSC_DEADLINE_BIT != 0
 }
 
