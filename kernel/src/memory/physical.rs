@@ -37,7 +37,7 @@ impl PhysicalMemoryMapping {
     }
 
     /// Translates a physical range without wrapping its end address.
-    pub const fn translate_range(self, range: PhysRange) -> Option<VirtRange> {
+    pub fn translate_range(self, range: PhysRange) -> Option<VirtRange> {
         let start = self.translate(range.start())?;
         let end = self.translate(range.end())?;
         VirtRange::new(start, end)
