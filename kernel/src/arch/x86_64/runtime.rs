@@ -7,12 +7,11 @@
 
 use alloc::boxed::Box;
 
-use crate::scheduler::{Priority, TaskId};
+use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
 
 use super::context_switch::Context;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::yield_switch::{self, YieldError};
-use super::scheduler::reschedule::{PreemptionGate, RescheduleRequest};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -24,9 +23,7 @@ pub enum RuntimeError {
 }
 
 impl From<YieldError> for RuntimeError {
-    fn from(error: YieldError) -> Self {
-        Self::Yield(error)
-    }
+    fn from(error: YieldError) -> Self { Self::Yield(error) }
 }
 
 #[derive(Debug)]
@@ -61,12 +58,8 @@ impl KernelRuntime {
     }
 
     pub fn safe_reschedule_point(&mut self) -> Result<bool, RuntimeError> {
-        if !self.preemption.is_enabled() {
-            return Err(RuntimeError::PreemptionDisabled);
-        }
-        if !self.reschedule.take() {
-            return Ok(false);
-        }
+        if !self.preemption.is_enabled() { return Err(RuntimeError::PreemptionDisabled); }
+        if !self.reschedule.take() { return Ok(false); }
         self.dispatch_once()?;
         Ok(true)
     }
@@ -109,13 +102,11 @@ impl KernelRuntime {
 }
 
 pub struct PreemptionDisableGuard<'a> {
-    inner: Option<super::scheduler::reschedule::DisableGuard<'a>>,
+    inner: Option<crate::scheduler::DisableGuard<'a>>,
 }
 
 impl Drop for PreemptionDisableGuard<'_> {
-    fn drop(&mut self) {
-        let _ = self.inner.take();
-    }
+    fn drop(&mut self) { let _ = self.inner.take(); }
 }
 
 #[cfg(test)]
