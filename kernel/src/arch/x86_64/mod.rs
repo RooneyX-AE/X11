@@ -3,6 +3,7 @@
 pub mod acpi;
 pub mod apic;
 pub mod context_switch;
+pub mod dispatch;
 pub mod execution;
 pub mod execution_registry;
 pub mod interrupt_frame;
