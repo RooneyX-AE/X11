@@ -8,6 +8,7 @@ use crate::memory::PhysicalMemoryMapping;
 
 const IOREGSEL: u64 = 0x00;
 const IOWIN: u64 = 0x10;
+const IOAPIC_VERSION: u8 = 0x01;
 const REDIRECTION_TABLE_BASE: u8 = 0x10;
 
 /// A decoded I/O APIC redirection-table entry.
@@ -78,6 +79,13 @@ impl IoApic {
         self.physical_base
     }
 
+    /// Returns the highest redirection-table index implemented by this I/O
+    /// APIC, as reported by IOAPICVER bits 23:16.
+    pub unsafe fn max_redirection_index(&self) -> Option<u8> {
+        let version = unsafe { self.read_register(IOAPIC_VERSION)? };
+        Some((version >> 16) as u8)
+    }
+
     pub unsafe fn read_register(&self, register: u8) -> Option<u32> {
         let select_address = self.physical_base.checked_add(IOREGSEL)?;
         let data_address = self.physical_base.checked_add(IOWIN)?;
@@ -116,6 +124,12 @@ impl IoApic {
     }
 
     pub unsafe fn write_redirection(&self, index: u8, entry: RedirectionEntry) -> bool {
+        let Some(max_index) = unsafe { self.max_redirection_index() } else {
+            return false;
+        };
+        if index > max_index {
+            return false;
+        }
         let Some(offset) = index.checked_mul(2) else {
             return false;
         };
