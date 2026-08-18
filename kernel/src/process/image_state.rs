@@ -34,26 +34,15 @@ impl ProcessImage {
         })
     }
 
-    pub const fn address_space(self) -> AddressSpaceSpec {
-        self.address_space
-    }
-
-    pub const fn load_plan(self) -> LoadPlan {
-        self.load_plan
-    }
-
-    pub const fn stack_plan(self) -> UserStackPlan {
-        self.stack_plan
-    }
-
-    pub const fn context(self) -> InitialContext {
-        self.context
-    }
+    pub const fn address_space(self) -> AddressSpaceSpec { self.address_space }
+    pub const fn load_plan(self) -> LoadPlan { self.load_plan }
+    pub const fn stack_plan(self) -> UserStackPlan { self.stack_plan }
+    pub const fn context(self) -> InitialContext { self.context }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessImage, ProcessImageError};
+    use super::ProcessImage;
     use crate::process::{AddressSpaceId, AddressSpaceSpec, ElfImage, LoadPlan, UserStackPlan};
 
     fn minimal_elf() -> [u8; 120] {
@@ -85,15 +74,6 @@ mod tests {
         let process = ProcessImage::build(address_space, load_plan, stack_plan).unwrap();
         assert_eq!(process.context().entry(), process.load_plan().entry());
         assert_eq!(process.context().stack_pointer(), process.stack_plan().initial_rsp());
-    }
-
-    #[test]
-    fn image_rejects_invalid_context() {
-        let image = ElfImage::parse(&minimal_elf()).unwrap();
-        let address_space = AddressSpaceSpec::new(AddressSpaceId::new(2).unwrap());
-        let load_plan = LoadPlan::build(address_space, image).unwrap();
-        let stack_plan = UserStackPlan::build().unwrap();
-        assert!(ProcessImage::build(address_space, load_plan, stack_plan).is_ok());
-        assert_ne!(ProcessImageError::InvalidContext, ProcessImageError::InvalidContext);
+        assert_eq!(process.address_space().id(), address_space.id());
     }
 }
