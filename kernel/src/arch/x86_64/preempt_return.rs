@@ -4,8 +4,6 @@
 //! returns require a separate privilege-transition frame contract and address
 //! space restoration path.
 
-use core::arch::asm;
-
 use super::interrupted_state::KernelPreemptState;
 
 /// Restores a previously interrupted kernel task and returns through `iretq`.
@@ -19,7 +17,6 @@ use super::interrupted_state::KernelPreemptState;
 pub unsafe extern "C" fn return_to_kernel(state: *const KernelPreemptState) -> ! {
     core::arch::naked_asm!(
         "mov r11, rdi",
-        // Build the CPU-owned same-CPL return frame at resume_rsp - 24.
         "mov r10, [r11 + 144]",
         "sub r10, 24",
         "mov rax, [r11 + 120]",
@@ -29,7 +26,6 @@ pub unsafe extern "C" fn return_to_kernel(state: *const KernelPreemptState) -> !
         "mov rax, [r11 + 136]",
         "mov [r10 + 16], rax",
         "mov rsp, r10",
-        // Restore all general-purpose registers from the stable state packet.
         "mov rax, [r11 + 0]",
         "mov rcx, [r11 + 8]",
         "mov rdx, [r11 + 16]",
@@ -88,9 +84,4 @@ mod tests {
         };
         assert!(!validate_kernel_state(&state));
     }
-}
-
-#[allow(dead_code)]
-fn _keep_asm_import_live() {
-    let _ = asm as unsafe fn();
 }
