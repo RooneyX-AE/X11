@@ -20,7 +20,17 @@ jobs:
         continue-on-error: true
         run: cargo fmt --all -- --check
       - name: Check kernel binary
-        run: cargo check -p x11-os-kernel --bin x11-os-kernel --target x86_64-unknown-none
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          cargo check -p x11-os-kernel --bin x11-os-kernel --target x86_64-unknown-none 2>&1 | tee cargo-check.log
+          check_status=${PIPESTATUS[0]}
+          set -e
+          echo '--- compiler error summary ---'
+          grep -E '^error([[]E[0-9]+[]])?:|^ *--> ' cargo-check.log | head -n 240 || true
+          echo '--- end compiler error summary ---'
+          exit "$check_status"
       - name: Build UEFI image
         run: cargo build -p x11-os-boot
       - name: Install QEMU and UEFI firmware
