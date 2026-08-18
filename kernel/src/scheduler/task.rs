@@ -1,5 +1,7 @@
 //! Architecture-independent task identity and lifecycle state.
 
+use super::execution::ExecutionHandle;
+
 /// Generational identifier prevents stale handles from referring to reused task slots.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct TaskId {
@@ -52,6 +54,7 @@ pub struct TaskControlBlock {
     id: TaskId,
     state: TaskState,
     priority: Priority,
+    execution: Option<ExecutionHandle>,
 }
 
 impl TaskControlBlock {
@@ -60,6 +63,7 @@ impl TaskControlBlock {
             id,
             state: TaskState::Created,
             priority,
+            execution: None,
         }
     }
 
@@ -73,6 +77,20 @@ impl TaskControlBlock {
 
     pub const fn priority(self) -> Priority {
         self.priority
+    }
+
+    pub const fn execution(self) -> Option<ExecutionHandle> {
+        self.execution
+    }
+
+    pub fn attach_execution(&mut self) -> ExecutionHandle {
+        let handle = ExecutionHandle::for_task(self.id);
+        self.execution = Some(handle);
+        handle
+    }
+
+    pub fn detach_execution(&mut self) -> Option<ExecutionHandle> {
+        self.execution.take()
     }
 
     pub fn transition(&mut self, state: TaskState) -> bool {
@@ -113,6 +131,22 @@ mod tests {
         assert!(task.transition(TaskState::Ready));
         assert!(task.transition(TaskState::Running));
         assert_eq!(task.state(), TaskState::Running);
+    }
+
+    #[test]
+    fn execution_handle_matches_task_generation() {
+        let id = TaskId::new(3, 7);
+        let mut task = TaskControlBlock::new(id, Priority::DEFAULT);
+        let handle = task.attach_execution();
+        assert_eq!(handle.task_id(), id);
+        assert_eq!(task.execution(), Some(handle));
+
+        assert!(task.transition(TaskState::Ready));
+        assert!(task.transition(TaskState::Running));
+        assert_eq!(task.execution(), Some(handle));
+
+        let stale = TaskId::new(3, 8);
+        assert_ne!(handle.task_id(), stale);
     }
 
     #[test]
