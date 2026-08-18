@@ -125,10 +125,10 @@ jobs:
               position = next_position
 
           tick_match = re.search(r"timer ticks observed after iretq = (\d+)", log)
-          if not tick_match or int(tick_match.group(1)) <= 0:
-              raise SystemExit("timer tick evidence is missing or zero")
+          if not tick_match or int(tick_match.group(1)) < 2:
+              raise SystemExit("timer tick evidence is below the two-interrupt preemption proof")
 
-          print("QEMU runtime marker order and timer evidence verified")
+          print("QEMU runtime marker order and two-timer preemption evidence verified")
           PY
       - name: Upload diagnostics
         if: always()
