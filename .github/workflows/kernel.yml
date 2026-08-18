@@ -31,6 +31,8 @@ jobs:
         run: cargo test -p x11-os-user-hello --lib
       - name: Check userspace payload target
         run: cargo check -p x11-os-user-hello --target x86_64-unknown-none
+      - name: Build userspace ELF payload
+        run: cargo build -p x11-os-user-hello --bin x11-os-user-hello --target x86_64-unknown-none
       - name: Check kernel binary
         shell: bash
         env:
