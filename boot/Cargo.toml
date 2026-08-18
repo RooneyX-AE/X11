@@ -7,3 +7,4 @@ license.workspace = true
 [build-dependencies]
 bootloader = "0.11.17"
 x11-os-kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
+x11-os-user-hello = { path = "../userspace/hello", artifact = "bin", target = "x86_64-unknown-none", bin = "x11-os-user-hello" }
