@@ -106,6 +106,8 @@ jobs:
                   raise SystemExit(f"forbidden runtime marker observed: {marker}")
 
           required = [
+              "X11-OS: userspace ramdisk loaded bytes =",
+              "X11-OS: userspace ELF validated segments =",
               "X11-OS: kernel entry reached",
               "Hello World from X11-OS!",
               "X11-OS: CPU foundation initialized",
