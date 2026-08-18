@@ -6,8 +6,12 @@ Status: design gate before preemption/SMP
 
 - `x86_64-unknown-none` uses System V ABI without a red zone.
 - The generic scheduler owns task identity, lifecycle state, and queue policy.
+- Task control blocks use stable `Box` allocation so slot-table growth cannot relocate a live task object.
 - x86_64 owns register context, kernel-stack representation, and context-switch assembly.
 - Voluntary context switching and interrupt/preemptive switching are distinct contracts.
+- The scheduler exposes an architecture-independent `ExecutionBinding` contract.
+- The x86_64 execution adapter owns its kernel stack and voluntary `Context` behind that contract.
+- The bootstrap context-switch smoke test now owns its context, stack, continuation state, and test flag on the caller's stack; it has no static `UnsafeCell` state.
 
 ## Required invariants
 
@@ -21,16 +25,16 @@ Status: design gate before preemption/SMP
 
 ## Current blockers
 
-- The bootstrap context-switch smoke test currently uses static `UnsafeCell` state. This is acceptable only for a bounded single-CPU diagnostic but is not a valid long-term SMP pattern and must be removed before SMP.
-- `TaskExecutionState` currently owns its kernel stack through `Vec<u8>`. When execution state becomes part of a running task, the containing allocation must provide stable storage and must not move during execution.
-- A future task table must therefore use stable allocation semantics rather than a movable `Vec<T>` containing self-referential stack/context bindings.
-- The scheduler must expose a generic execution-binding interface rather than importing x86_64 context types.
+- The context-switch smoke test needs runtime/QEMU evidence before its assembly path can be treated as verified.
+- The x86_64 execution binding is not yet owned by the generic task table, so task lifecycle and execution-lifetime coupling still need an explicit ownership boundary.
+- APIC EOI configuration still uses bootstrap-global state; it must become CPU-local before SMP.
+- The timer handler currently counts interrupts but does not yet perform scheduler preemption.
 
 ## Next implementation gate
 
-1. Replace global smoke-test state with stack-local state.
-2. Introduce a stable task storage/arena boundary.
-3. Add an architecture-independent execution binding trait.
-4. Bind x86_64 `Context + kernel stack` to that trait.
-5. Only then implement timer-driven preemption.
-6. Only after preemption is proven should SMP/CPU-local scheduler state begin.
+1. Obtain CI/QEMU evidence for the context-switch smoke path.
+2. Define how a task owns its architecture-specific `ExecutionBinding` without making the generic task type architecture-dependent.
+3. Define the interrupt/preemption frame contract separately from voluntary `Context`.
+4. Route the timer interrupt through a CPU-local scheduler state without switching tasks yet.
+5. Only after those contracts are validated, implement timer-driven preemption.
+6. Only after preemption is proven should SMP bring-up begin.
