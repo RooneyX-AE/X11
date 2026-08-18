@@ -84,7 +84,7 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         page: Page4K,
         physical_address: u64,
     ) -> Result<Self::Flush, MappingError> {
-        let virtual_range = page.range().ok_or(MappingError::InvalidPhysicalAddress)?;
+        let virtual_range = page.range().ok_or(MappingError::InvalidVirtualAddress)?;
         if virtual_range.start() < self.address_space.start()
             || virtual_range.end() > self.address_space.end()
         {
@@ -127,8 +127,11 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
     }
 
     fn unmap_page(&mut self, page: Page4K) -> Result<(u64, Self::Flush), MappingError> {
-        if page.range().is_none() {
-            return Err(MappingError::InvalidPhysicalAddress);
+        let virtual_range = page.range().ok_or(MappingError::InvalidVirtualAddress)?;
+        if virtual_range.start() < self.address_space.start()
+            || virtual_range.end() > self.address_space.end()
+        {
+            return Err(MappingError::OutsideAddressSpace);
         }
 
         let target =
@@ -150,6 +153,10 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
     }
 
     fn translate(&self, virtual_address: u64) -> Option<u64> {
+        if !self.address_space.contains(virtual_address) {
+            return None;
+        }
+
         self.inner
             .translate(x86_64::VirtAddr::new(virtual_address))
             .map(|address| address.as_u64())
