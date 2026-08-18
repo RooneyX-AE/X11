@@ -9,9 +9,7 @@ use crate::scheduler::TaskId;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PreemptionPlan {
-    /// The selected task has never started and requires its bootstrap context.
-    Bootstrap { task_id: TaskId, context: Context },
-    /// The selected task has a cooperative kernel context saved by `yield`.
+    /// The selected task has a cooperative kernel context saved or initialized.
     ReturnToContext { task_id: TaskId, context: Context },
     /// The selected task owns a complete kernel interrupted-state snapshot.
     IretKernel { task_id: TaskId, state: KernelPreemptState },
@@ -20,9 +18,7 @@ pub enum PreemptionPlan {
 impl PreemptionPlan {
     pub const fn task_id(self) -> TaskId {
         match self {
-            Self::Bootstrap { task_id, .. }
-            | Self::ReturnToContext { task_id, .. }
-            | Self::IretKernel { task_id, .. } => task_id,
+            Self::ReturnToContext { task_id, .. } | Self::IretKernel { task_id, .. } => task_id,
         }
     }
 
