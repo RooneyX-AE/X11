@@ -22,7 +22,7 @@ pub use page::{Page4K, PAGE_SIZE_4K};
 pub use page_table::{MappingError, MappingFlush, PageAccess, PageTableMapper};
 pub use physical::PhysicalMemoryMapping;
 pub use user::{validate_slice, UserRangeError};
-pub use user_copy::{validate_readable_range, UserReadError};
+pub use user_copy::{copy_from_user, validate_readable_range, UserCopyBackend, UserReadError};
 
 /// Produces a kernel-owned summary of the bootloader memory map.
 pub fn summarize_boot_map(regions: &bootloader_api::info::MemoryRegions) -> MemorySummary {
