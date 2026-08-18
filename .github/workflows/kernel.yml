@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 ovmf
-      - name: Boot kernel and verify platform and memory path
+      - name: Boot kernel and verify platform, memory, timer, and scheduler paths
         shell: bash
         run: |
           set -o pipefail
@@ -49,10 +49,14 @@ jobs:
           grep -q 'X11-OS: ACPI MADT discovered' qemu.log
           grep -q 'X11-OS: legacy 8259 masked' qemu.log
           grep -q 'X11-OS: local APIC mode =' qemu.log
+          grep -q 'X11-OS: Local APIC EOI initialized' qemu.log
           grep -q 'X11-OS: LAPIC timer calibrated Hz =' qemu.log
+          grep -q 'X11-OS: LAPIC periodic timer enabled at 100 Hz' qemu.log
+          grep -q 'X11-OS: LAPIC timer interrupt verified, ticks =' qemu.log
           grep -q 'X11-OS: page mapping verified' qemu.log
           grep -q 'X11-OS: page unmapping verified' qemu.log
           grep -q 'X11-OS: heap initialized' qemu.log
           grep -q 'X11-OS: heap allocation verified' qemu.log
           grep -q 'X11-OS: heap deallocation verified' qemu.log
           grep -q 'X11-OS: scheduler lifecycle verified' qemu.log
+          grep -q 'X11-OS: voluntary context switch verified' qemu.log
