@@ -8,14 +8,13 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::scheduler::TaskId;
+use crate::scheduler::{ExecutionBinding, TaskId};
 
 use super::execution::{ExecutionError, X86ExecutionBinding};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RegistryError {
-    SlotExhausted,
-    TaskMismatch,
+    TaskAlreadyBound,
 }
 
 #[derive(Debug, Default)]
@@ -32,8 +31,15 @@ impl ExecutionRegistry {
         &mut self,
         task_id: TaskId,
         entry: extern "C" fn() -> !,
-    ) -> Result<(), ExecutionError> {
-        let binding = Box::new(X86ExecutionBinding::new(task_id, entry)?);
+    ) -> Result<(), RegistryInsertError> {
+        if self.get(task_id).is_some() {
+            return Err(RegistryInsertError::AlreadyBound);
+        }
+
+        let binding = Box::new(
+            X86ExecutionBinding::new(task_id, entry)
+                .map_err(RegistryInsertError::Allocation)?,
+        );
 
         if let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) {
             *slot = Some(binding);
@@ -45,7 +51,11 @@ impl ExecutionRegistry {
     }
 
     pub fn remove(&mut self, task_id: TaskId) -> bool {
-        let Some((_, slot)) = self.find_slot_mut(task_id) else {
+        let Some(slot) = self
+            .entries
+            .iter_mut()
+            .find(|slot| slot.as_deref().is_some_and(|binding| binding.task_id() == task_id))
+        else {
             return false;
         };
         *slot = None;
@@ -75,21 +85,17 @@ impl ExecutionRegistry {
             .map(|binding| binding.validate().is_ok())
             .unwrap_or(false)
     }
+}
 
-    fn find_slot_mut(
-        &mut self,
-        task_id: TaskId,
-    ) -> Option<(usize, &mut Option<Box<X86ExecutionBinding>>)> {
-        self.entries
-            .iter_mut()
-            .enumerate()
-            .find(|(_, slot)| slot.as_deref().is_some_and(|binding| binding.task_id() == task_id))
-    }
+#[derive(Debug)]
+pub enum RegistryInsertError {
+    AlreadyBound,
+    Allocation(ExecutionError),
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ExecutionRegistry;
+    use super::{ExecutionRegistry, RegistryInsertError};
     use crate::scheduler::TaskId;
 
     extern "C" fn never_returns() -> ! {
@@ -103,6 +109,17 @@ mod tests {
         registry.insert(task, never_returns).unwrap();
         assert_eq!(registry.count(), 1);
         assert!(registry.is_valid(task));
+    }
+
+    #[test]
+    fn duplicate_task_binding_is_rejected() {
+        let mut registry = ExecutionRegistry::new();
+        let task = TaskId::new(1, 1);
+        registry.insert(task, never_returns).unwrap();
+        assert!(matches!(
+            registry.insert(task, never_returns),
+            Err(RegistryInsertError::AlreadyBound)
+        ));
     }
 
     #[test]
