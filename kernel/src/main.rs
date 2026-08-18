@@ -19,6 +19,7 @@ use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use memory::{FrameAllocator, PageTableMapper};
+use timer::TimerDevice;
 
 use arch::x86_64::page_table::X86PageTableMapper;
 
@@ -112,12 +113,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     arch::x86_64::pic::mask_all();
                     serial::write_str("X11-OS: legacy 8259 masked\r\n");
 
-                    if apic.preferred_mode().is_some() {
+                    if let Some(mode) = apic.preferred_mode() {
                         // SAFETY: CPU interrupt delivery is not enabled yet,
                         // and the capability snapshot came directly from CPUID.
-                        if let Some(mode) = unsafe {
-                            arch::x86_64::apic::enable_preferred_mode(apic)
-                        } {
+                        if unsafe { arch::x86_64::apic::enable_preferred_mode(apic) }
+                            == Some(mode)
+                        {
                             serial::write_str("X11-OS: local APIC mode = ");
                             serial::write_str(match mode {
                                 arch::x86_64::apic::ApicMode::XApic => "xAPIC\r\n",
@@ -125,6 +126,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             });
                             apic_ready = true;
 
+                            // SAFETY: The APIC mode is active and the direct map
+                            // covers the physical Local APIC page when xAPIC is used.
                             if unsafe { arch::x86_64::local_apic::initialize(mode, physical_mapping) }
                                 .is_ok()
                             {
@@ -163,6 +166,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         serial::write_str("X11-OS: LAPIC timer calibrated Hz = ");
                         serial::write_usize(frequency.hz() as usize);
                         serial::write_str("\r\n");
+
+                        match timer_device.set_periodic(timer::TimerInterval::new(10_000_000).unwrap())
+                        {
+                            Ok(()) => {
+                                serial::write_str(
+                                    "X11-OS: LAPIC periodic timer enabled at 100 Hz\r\n",
+                                );
+                                x86_64::instructions::interrupts::enable();
+                                while arch::x86_64::timer_ticks() < 3 {
+                                    x86_64::instructions::hlt();
+                                }
+                                let ticks = arch::x86_64::timer_ticks();
+                                let _ = timer_device.disable();
+                                serial::write_str(
+                                    "X11-OS: LAPIC timer interrupt verified, ticks = ",
+                                );
+                                serial::write_usize(ticks as usize);
+                                serial::write_str("\r\n");
+                            }
+                            Err(_) => {
+                                serial::write_str("X11-OS: LAPIC periodic timer enable failed\r\n");
+                            }
+                        }
                     }
                     Err(_) => serial::write_str("X11-OS: LAPIC timer calibration failed\r\n"),
                 },
@@ -310,6 +336,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         "X11-OS: scheduler lifecycle verified\r\n"
     } else {
         "X11-OS: scheduler lifecycle verification failed\r\n"
+    });
+
+    let context_switch_verified = x86_64::instructions::interrupts::without_interrupts(|| {
+        arch::x86_64::context_switch::smoke_test()
+    });
+    serial::write_str(if context_switch_verified {
+        "X11-OS: voluntary context switch verified\r\n"
+    } else {
+        "X11-OS: voluntary context switch verification failed\r\n"
     });
 
     serial::write_str("X11-OS: entering idle state\r\n");
