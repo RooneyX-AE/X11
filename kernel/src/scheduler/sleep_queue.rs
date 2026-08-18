@@ -99,6 +99,16 @@ mod tests {
     }
 
     #[test]
+    fn equal_deadlines_use_task_id_for_deterministic_order() {
+        let mut queue = SleepQueue::new();
+        let a = TaskId::new(2, 1);
+        let b = TaskId::new(1, 1);
+        assert!(queue.insert(SleepEntry::new(10, a)));
+        assert!(queue.insert(SleepEntry::new(10, b)));
+        assert_eq!(queue.snapshot(), alloc::vec![SleepEntry::new(10, b), SleepEntry::new(10, a)]);
+    }
+
+    #[test]
     fn duplicate_sleep_is_rejected() {
         let mut queue = SleepQueue::new();
         let task = TaskId::new(0, 1);
@@ -115,5 +125,19 @@ mod tests {
         assert_eq!(queue.expire_until(9), alloc::vec![]);
         assert_eq!(queue.expire_until(10), alloc::vec![task]);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn remove_deletes_only_the_requested_task() {
+        let mut queue = SleepQueue::new();
+        let a = TaskId::new(0, 1);
+        let b = TaskId::new(1, 1);
+        queue.insert(SleepEntry::new(10, a));
+        queue.insert(SleepEntry::new(20, b));
+        assert!(queue.remove(a));
+        assert!(!queue.contains(a));
+        assert!(queue.contains(b));
+        assert_eq!(queue.next_deadline(), Some(20));
+        assert!(!queue.remove(a));
     }
 }
