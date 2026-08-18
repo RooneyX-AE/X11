@@ -23,6 +23,10 @@ jobs:
         run: git diff --check
       - name: Run host-side kernel tests
         run: cargo test -p x11-os-kernel --lib
+      - name: Run userspace payload tests
+        run: cargo test -p x11-os-user-hello --lib
+      - name: Check userspace payload target
+        run: cargo check -p x11-os-user-hello --target x86_64-unknown-none
       - name: Check kernel binary
         shell: bash
         env:
