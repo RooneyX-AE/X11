@@ -10,61 +10,77 @@ use super::page::Page4K;
 /// Errors returned while changing a virtual mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MappingError {
-    /// The virtual page could not be represented as a complete 4 KiB range.
     InvalidVirtualAddress,
-    /// The backing physical address is not page aligned or is otherwise invalid.
     InvalidPhysicalAddress,
-    /// The virtual page is outside the mapper's address-space policy.
     OutsideAddressSpace,
-    /// A mapping already exists at the requested virtual address.
     AlreadyMapped,
-    /// No mapping exists at the requested virtual address.
     NotMapped,
-    /// A page-table entry above the requested page is a huge-page mapping.
     ParentEntryHugePage,
-    /// A new lower-level page table could not be allocated.
     FrameAllocationFailed,
-    /// The existing page-table entry contains an invalid physical frame address.
     InvalidMappedFrame,
-    /// The architecture backend rejected an operation for an otherwise valid
-    /// request and no more specific contract error is available.
     BackendFailure,
 }
 
-/// A single mapping change that still requires a hardware TLB update.
-///
-/// The architecture backend owns the exact flush mechanism. This token makes
-/// the completion step explicit at the kernel API boundary.
 pub trait MappingFlush {
-    /// Applies the pending translation-cache invalidation.
     fn flush(self);
 }
 
-/// Result of mapping one page.
 pub type MapResult<F> = Result<F, MappingError>;
+
+/// Permissions and residency exposed by an address-space backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageAccess {
+    pub mapped: bool,
+    pub user: bool,
+    pub readable: bool,
+    pub writable: bool,
+}
+
+impl PageAccess {
+    pub const fn unmapped() -> Self {
+        Self {
+            mapped: false,
+            user: false,
+            readable: false,
+            writable: false,
+        }
+    }
+
+    pub const fn user_read_only() -> Self {
+        Self {
+            mapped: true,
+            user: true,
+            readable: true,
+            writable: false,
+        }
+    }
+
+    pub const fn user_read_write() -> Self {
+        Self {
+            mapped: true,
+            user: true,
+            readable: true,
+            writable: true,
+        }
+    }
+}
 
 /// Kernel-facing interface for page-sized mappings.
 pub trait PageTableMapper {
     type Flush: MappingFlush;
 
-    /// Maps one virtual page to one physical frame.
     fn map_page(&mut self, page: Page4K, physical_address: u64) -> MapResult<Self::Flush>;
 
-    /// Removes one virtual-page mapping and returns its physical address plus
-    /// the flush operation required to make the CPU observe the change.
     fn unmap_page(&mut self, page: Page4K) -> MapResult<(u64, Self::Flush)>;
 
-    /// Translates a virtual address into its backing physical address.
-    ///
-    /// Addresses outside the mapper's supported address space are treated as
-    /// unmapped by this contract.
     fn translate(&self, virtual_address: u64) -> Option<u64>;
 
-    /// Returns the supported virtual-address policy.
+    /// Returns access attributes for the mapping containing `virtual_address`.
+    fn page_access(&self, virtual_address: u64) -> PageAccess;
+
     fn address_space(&self) -> VirtRange;
 }
 
-/// Initial kernel-only virtual address space policy.
 pub const KERNEL_ADDRESS_SPACE: VirtRange = match VirtRange::new(
     super::address_space::KERNEL_SPACE_START,
     u64::MAX,
@@ -89,5 +105,23 @@ mod tests {
         assert_ne!(MappingError::AlreadyMapped, MappingError::NotMapped);
         assert_ne!(MappingError::FrameAllocationFailed, MappingError::ParentEntryHugePage);
         assert_ne!(MappingError::InvalidMappedFrame, MappingError::BackendFailure);
+    }
+
+    #[test]
+    fn page_access_defaults_to_unmapped() {
+        assert_eq!(PageAccess::unmapped(), PageAccess {
+            mapped: false,
+            user: false,
+            readable: false,
+            writable: false,
+        });
+    }
+
+    #[test]
+    fn user_access_profiles_are_explicit() {
+        assert_eq!(PageAccess::user_read_only().mapped, true);
+        assert_eq!(PageAccess::user_read_only().user, true);
+        assert_eq!(PageAccess::user_read_only().writable, false);
+        assert_eq!(PageAccess::user_read_write().writable, true);
     }
 }
