@@ -10,17 +10,22 @@ use super::page::Page4K;
 /// Errors returned while changing a virtual mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MappingError {
-    /// The requested address is not page aligned.
-    Unaligned,
-    /// The address is outside the supported virtual-address policy.
+    /// The backing physical address is not page aligned or is otherwise invalid.
+    InvalidPhysicalAddress,
+    /// The virtual page is outside the mapper's address-space policy.
     OutsideAddressSpace,
     /// A mapping already exists at the requested virtual address.
     AlreadyMapped,
     /// No mapping exists at the requested virtual address.
     NotMapped,
-    /// The backing physical address is invalid or unavailable.
-    InvalidPhysicalAddress,
-    /// The architecture backend rejected the operation.
+    /// A page-table entry above the requested page is a huge-page mapping.
+    ParentEntryHugePage,
+    /// A new lower-level page table could not be allocated.
+    FrameAllocationFailed,
+    /// The existing page-table entry contains an invalid physical frame address.
+    InvalidMappedFrame,
+    /// The architecture backend rejected an operation for an otherwise valid
+    /// request and no more specific contract error is available.
     BackendFailure,
 }
 
@@ -76,5 +81,7 @@ mod tests {
     #[test]
     fn mapping_errors_are_distinct() {
         assert_ne!(MappingError::AlreadyMapped, MappingError::NotMapped);
+        assert_ne!(MappingError::FrameAllocationFailed, MappingError::ParentEntryHugePage);
+        assert_ne!(MappingError::InvalidMappedFrame, MappingError::BackendFailure);
     }
 }
