@@ -47,6 +47,10 @@ extern "C" fn preemption_task_b() -> ! {
     loop {
         if PREEMPT_IRET_RETURNED.swap(false, Ordering::AcqRel) {
             serial::write_str("X11-OS: task B resumed through kernel iretq\r\n");
+            let ticks = arch::x86_64::idt::timer_ticks();
+            serial::write_str("X11-OS: timer ticks observed after iretq = ");
+            serial::write_usize(ticks as usize);
+            serial::write_str("\r\n");
         }
         x86_64::instructions::hlt();
     }
