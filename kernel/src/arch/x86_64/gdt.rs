@@ -4,7 +4,7 @@
 //! scheduler and userspace work does not depend on descriptor-table details.
 
 use spin::Once;
-use x86_64::instructions::segmentation::{Segment, CS};
+use x86_64::instructions::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 
 struct GdtState {
