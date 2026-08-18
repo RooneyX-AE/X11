@@ -7,7 +7,7 @@
 use crate::memory::{EarlyFrameAllocator, MappingFlags, Page4K, PageTableMapper};
 
 use super::{
-    map_load_plan, AddressSpaceSpec, LoadError, LoadResult, ProcessImage, UserStackPlan,
+    map_load_plan, AddressSpaceSpec, LoadError, LoadResult, ProcessImage,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,10 +22,16 @@ pub enum AddressSpaceBuildError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MappedStackPage {
+    pub virtual_page: Page4K,
+    pub physical_address: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuiltAddressSpace {
     image: ProcessImage,
     load: LoadResult,
-    stack_pages: [Option<Page4K>; crate::memory::USER_STACK_PAGES as usize],
+    stack_pages: [Option<MappedStackPage>; crate::memory::USER_STACK_PAGES as usize],
     stack_count: usize,
 }
 
@@ -33,7 +39,7 @@ impl BuiltAddressSpace {
     pub const fn image(self) -> ProcessImage { self.image }
     pub const fn load(self) -> LoadResult { self.load }
     pub const fn stack_count(self) -> usize { self.stack_count }
-    pub fn stack_page(self, index: usize) -> Option<Page4K> {
+    pub fn stack_page(self, index: usize) -> Option<MappedStackPage> {
         if index >= self.stack_count { None } else { self.stack_pages[index] }
     }
 }
@@ -65,7 +71,8 @@ pub fn build_address_space<M: PageTableMapper>(
                 return Err(AddressSpaceBuildError::StackMappingFailed);
             }
         };
-        match mapper.map_page(page, frame.start_address(), MappingFlags::read_write()) {
+        let physical_address = frame.start_address();
+        match mapper.map_page(page, physical_address, MappingFlags::read_write()) {
             Ok(flush) => flush.flush(),
             Err(_) => {
                 rollback_stack(mapper, &stack_pages, stack_count)?;
@@ -73,7 +80,7 @@ pub fn build_address_space<M: PageTableMapper>(
                 return Err(AddressSpaceBuildError::StackMappingFailed);
             }
         }
-        stack_pages[stack_count] = Some(page);
+        stack_pages[stack_count] = Some(MappedStackPage { virtual_page: page, physical_address });
         stack_count += 1;
     }
 
@@ -106,12 +113,12 @@ fn rollback_load<M: PageTableMapper>(mapper: &mut M, load: LoadResult) -> Result
 
 fn rollback_stack<M: PageTableMapper>(
     mapper: &mut M,
-    pages: &[Option<Page4K>; crate::memory::USER_STACK_PAGES as usize],
+    pages: &[Option<MappedStackPage>; crate::memory::USER_STACK_PAGES as usize],
     count: usize,
 ) -> Result<(), AddressSpaceBuildError> {
     for index in (0..count).rev() {
-        let page = pages[index].ok_or(AddressSpaceBuildError::RollbackFailed)?;
-        mapper.unmap_page(page)
+        let mapped = pages[index].ok_or(AddressSpaceBuildError::RollbackFailed)?;
+        mapper.unmap_page(mapped.virtual_page)
             .map(|(_, flush)| flush.flush())
             .map_err(|_| AddressSpaceBuildError::RollbackFailed)?;
     }
