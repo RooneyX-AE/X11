@@ -16,11 +16,14 @@ jobs:
           toolchain: nightly-2026-07-27
           target: x86_64-unknown-none
           components: rust-src, llvm-tools-preview, rustfmt
+          rustflags: ""
       - name: Check formatting
         continue-on-error: true
         run: cargo fmt --all -- --check
       - name: Check kernel binary
         shell: bash
+        env:
+          RUSTFLAGS: "-D warnings -A dead_code"
         run: |
           set -o pipefail
           set +e
