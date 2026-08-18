@@ -17,21 +17,13 @@ use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 use super::preemption_plan::PreemptionPlan;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum RegistryInsertError {
-    AlreadyBound,
-    Allocation,
-}
+pub enum RegistryInsertError { AlreadyBound, Allocation }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum InterruptCaptureError {
-    TaskNotFound,
-    Execution(ExecutionError),
-}
+pub enum InterruptCaptureError { TaskNotFound, Execution(ExecutionError) }
 
 #[derive(Debug, Default)]
-pub struct ExecutionRegistry {
-    entries: Vec<Option<Box<X86ExecutionBinding>>>,
-}
+pub struct ExecutionRegistry { entries: Vec<Option<Box<X86ExecutionBinding>>> }
 
 impl ExecutionRegistry {
     pub const fn new() -> Self { Self { entries: Vec::new() } }
@@ -68,12 +60,6 @@ impl ExecutionRegistry {
         self.entries.iter_mut().filter_map(Option::as_deref_mut).find(|binding| binding.task_id() == task_id)
     }
 
-    /// Copies CPU-interrupted state out of the temporary IRQ stack into the
-    /// execution binding owned by `task_id`.
-    ///
-    /// # Safety
-    /// The pointers must refer to the live frame produced for `task_id` by the
-    /// x86_64 interrupt entry stub and remain valid for the duration of the call.
     pub unsafe fn capture_interrupted(
         &mut self,
         task_id: TaskId,
