@@ -145,14 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn sole_current_task_does_not_self_switch() {
+    fn prepare_run_does_not_self_schedule_sole_current_task() {
         let mut runtime = KernelRuntime::new();
         let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        let result = unsafe { runtime.dispatch_once() };
-        assert!(result.is_ok());
+        assert_eq!(runtime.prepare_run().unwrap(), task);
         assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Running));
-        let result = unsafe { runtime.dispatch_once() };
-        assert_eq!(result, Err(RuntimeError::NoRunnableTask));
+        assert_eq!(runtime.prepare_run(), Err(RuntimeError::NoRunnableTask));
         assert_eq!(runtime.manager().scheduler.current(), Some(task));
     }
 }
