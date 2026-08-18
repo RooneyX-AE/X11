@@ -89,13 +89,13 @@ pub enum CaptureError {
 
 #[cfg(test)]
 mod tests {
-    use super::{local, CaptureError};
+    use super::{CaptureError, CpuLocalState};
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::scheduler::TaskId;
 
     #[test]
     fn cpu_local_current_task_round_trips() {
-        let cpu = local();
+        let cpu = CpuLocalState::new();
         unsafe { cpu.set_current_task(Some(TaskId::new(7, 3))) };
         assert_eq!(cpu.current_task(), Some(TaskId::new(7, 3)));
         unsafe { cpu.set_current_task(None) };
@@ -104,8 +104,7 @@ mod tests {
 
     #[test]
     fn capture_requires_current_task() {
-        let cpu = local();
-        unsafe { cpu.set_current_task(None) };
+        let cpu = CpuLocalState::new();
         let registers = SavedRegisters::default();
         let mut raw = [0u64; 3];
         raw[0] = 0x1000;
