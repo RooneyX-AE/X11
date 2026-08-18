@@ -2,6 +2,7 @@
 
 mod gdt;
 mod idt;
+pub mod page_table;
 pub mod paging;
 
 pub fn init() {
