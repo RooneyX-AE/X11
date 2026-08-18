@@ -97,6 +97,11 @@ impl ApicTopology {
             source_override_count: 0,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) const fn empty_for_tests() -> Self {
+        Self::empty()
+    }
 }
 
 /// Parses ACPI APIC topology through the bootloader's physical-memory map.
