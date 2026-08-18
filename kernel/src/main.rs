@@ -85,6 +85,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     let mut apic_ready = false;
+    let mut lapic_timer = None;
+
     if let (Some(mapping), Some(rsdp_address)) = (
         physical_mapping,
         Option::<u64>::from(boot_info.rsdp_addr),
@@ -111,18 +113,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     arch::x86_64::pic::mask_all();
                     serial::write_str("X11-OS: legacy 8259 masked\r\n");
 
-                    if apic.preferred_mode().is_some() {
+                    if let Some(mode) = apic.preferred_mode() {
                         // SAFETY: CPU interrupt delivery is not enabled yet,
                         // and the capability snapshot came directly from CPUID.
-                        if let Some(mode) = unsafe {
-                            arch::x86_64::apic::enable_preferred_mode(apic)
-                        } {
-                            serial::write_str("X11-OS: local APIC mode = ");
-                            serial::write_str(match mode {
-                                arch::x86_64::apic::ApicMode::XApic => "xAPIC\r\n",
-                                arch::x86_64::apic::ApicMode::X2Apic => "x2APIC\r\n",
-                            });
-                            apic_ready = true;
+                        if unsafe { arch::x86_64::apic::enable_preferred_mode(apic) }
+                            == Some(mode)
+                        {
+                            match unsafe {
+                                arch::x86_64::local_apic::initialize(mode, Some(mapping))
+                            } {
+                                Ok(()) => {
+                                    serial::write_str("X11-OS: local APIC mode = ");
+                                    serial::write_str(match mode {
+                                        arch::x86_64::apic::ApicMode::XApic => "xAPIC\r\n",
+                                        arch::x86_64::apic::ApicMode::X2Apic => "x2APIC\r\n",
+                                    });
+                                    apic_ready = true;
+                                }
+                                Err(_) => {
+                                    serial::write_str("X11-OS: Local APIC EOI initialization failed\r\n");
+                                }
+                            }
+                        } else {
+                            serial::write_str("X11-OS: local APIC mode enable failed\r\n");
                         }
                     } else {
                         serial::write_str("X11-OS: no usable local APIC mode\r\n");
@@ -154,6 +167,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         serial::write_str("X11-OS: LAPIC timer calibrated Hz = ");
                         serial::write_usize(frequency.hz() as usize);
                         serial::write_str("\r\n");
+                        lapic_timer = Some(timer_device);
                     }
                     Err(_) => serial::write_str("X11-OS: LAPIC timer calibration failed\r\n"),
                 },
@@ -286,6 +300,34 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
         } else {
             serial::write_str("X11-OS: insufficient contiguous frames for heap\r\n");
+        }
+    }
+
+    if let Some(mut timer_device) = lapic_timer {
+        if let Some(interval) = timer::TimerInterval::new(10_000_000) {
+            match timer::TimerDevice::set_periodic(&mut timer_device, interval) {
+                Ok(()) => {
+                    let start = arch::x86_64::idt::timer_ticks();
+                    serial::write_str("X11-OS: LAPIC periodic timer enabled at 100 Hz\r\n");
+
+                    x86_64::instructions::interrupts::enable();
+                    while arch::x86_64::idt::timer_ticks() < start.saturating_add(3) {
+                        x86_64::instructions::hlt();
+                    }
+                    x86_64::instructions::interrupts::disable();
+
+                    let ticks = arch::x86_64::idt::timer_ticks();
+                    match timer::TimerDevice::disable(&mut timer_device) {
+                        Ok(()) => {
+                            serial::write_str("X11-OS: LAPIC timer interrupt verified, ticks = ");
+                            serial::write_usize(ticks as usize);
+                            serial::write_str("\r\n");
+                        }
+                        Err(_) => serial::write_str("X11-OS: LAPIC timer disable failed\r\n"),
+                    }
+                }
+                Err(_) => serial::write_str("X11-OS: LAPIC periodic timer setup failed\r\n"),
+            }
         }
     }
 
