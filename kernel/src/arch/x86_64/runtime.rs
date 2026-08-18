@@ -105,14 +105,16 @@ impl KernelRuntime {
 
     /// Handles timer-triggered preemption at the interrupt-return boundary.
     /// The scheduler is mutated only after the target return path has been
-    /// classified, preventing a task with no initialized execution state from
-    /// being marked Running while the CPU is still executing the interrupted task.
+    /// classified, preventing a bootstrap task from being marked Running while
+    /// the CPU is still executing the interrupted task.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
         self.commit_interrupted_state()?;
         self.request_reschedule();
 
         if !self.preemption.is_enabled() { return Ok(InterruptPreemption::ResumeCurrent); }
+        let current = self.manager.scheduler.current();
         let Some(candidate) = self.manager.scheduler.next_ready() else { return Ok(InterruptPreemption::ResumeCurrent); };
+        if Some(candidate) == current { return Ok(InterruptPreemption::ResumeCurrent); }
         let plan = self.manager.executions.preemption_plan(candidate).ok_or(RuntimeError::MissingExecutionPair)?;
 
         match plan {
