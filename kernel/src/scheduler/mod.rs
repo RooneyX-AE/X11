@@ -288,7 +288,6 @@ mod tests {
         let mut scheduler = Scheduler::new();
         let old = scheduler.create_task(Priority::DEFAULT);
         let mut waiters = WaitQueue::new();
-        // Queue stale membership directly to model an external cancellation path.
         assert!(waiters.enqueue(old).is_ok());
         let replacement = scheduler.create_task(Priority::DEFAULT);
         assert_ne!(old, replacement);
