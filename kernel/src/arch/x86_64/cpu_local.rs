@@ -27,11 +27,6 @@ impl CpuLocalState {
         }
     }
 
-    /// Updates the task considered current on this CPU.
-    ///
-    /// # Safety
-    /// Callers must be on the owning CPU with preemption/interrupts excluded
-    /// from concurrent mutation of this state.
     pub unsafe fn set_current_task(&self, task: Option<TaskId>) {
         unsafe { *self.current_task.get() = task };
     }
@@ -44,19 +39,21 @@ impl CpuLocalState {
     ///
     /// # Safety
     /// `registers` and `return_frame` must point to the live CPU interrupt
-    /// frame owned by the current interrupt entry. Only the owning CPU may
-    /// call this method, and at most one snapshot may be pending.
+    /// frame owned by the current interrupt entry. `resume_rsp` must be the
+    /// task stack pointer captured immediately before interrupt entry. Only the
+    /// owning CPU may call this method, and at most one snapshot may be pending.
     pub unsafe fn capture_interrupted(
         &self,
         registers: *const SavedRegisters,
         return_frame: InterruptReturnFrame,
+        resume_rsp: u64,
     ) -> Result<TaskId, CaptureError> {
         let task = self.current_task().ok_or(CaptureError::NoCurrentTask)?;
         let slot = unsafe { &mut *self.interrupted.get() };
         if slot.is_some() {
             return Err(CaptureError::AlreadyPending);
         }
-        let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
+        let snapshot = unsafe { InterruptedState::capture(registers, return_frame, resume_rsp) };
         if !snapshot.is_valid() {
             return Err(CaptureError::InvalidState);
         }
@@ -64,7 +61,6 @@ impl CpuLocalState {
         Ok(task)
     }
 
-    /// Takes the pending interrupted snapshot for normal-kernel consumption.
     pub fn take_interrupted(&self) -> Option<(TaskId, InterruptedState)> {
         unsafe { (*self.interrupted.get()).take() }
     }
@@ -112,7 +108,7 @@ mod tests {
         raw[2] = 0x202;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
         assert_eq!(
-            unsafe { cpu.capture_interrupted(&registers, frame) },
+            unsafe { cpu.capture_interrupted(&registers, frame, 0x8000) },
             Err(CaptureError::NoCurrentTask)
         );
     }
