@@ -80,6 +80,15 @@ impl KernelRuntime {
         Ok(self.manager.expire_sleepers(now))
     }
 
+    /// Consume the timer event recorded by the IRQ handler and service sleep
+    /// deadlines. No context switch is performed from the interrupt handler.
+    pub fn service_pending_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
+        if !super::idt::take_timer_pending() {
+            return Ok(0);
+        }
+        self.service_timer(now)
+    }
+
     /// Select the next runnable task and perform the architecture-specific
     /// voluntary context switch. The first call activates a task from the boot
     /// continuation; later calls switch between two live task contexts.
