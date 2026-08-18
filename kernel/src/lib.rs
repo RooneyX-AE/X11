@@ -1,6 +1,6 @@
 #![no_std]
 
-pub mod time;
+pub mod timer;
 
 /// Kernel entrypoint placeholder.
 ///
