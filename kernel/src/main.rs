@@ -13,6 +13,7 @@ mod interrupts;
 mod memory;
 mod scheduler;
 mod serial;
+mod syscall;
 mod timer;
 
 use alloc::vec::Vec;
@@ -61,8 +62,9 @@ entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
+    hello::print();
+
     serial::write_str("X11-OS: kernel entry reached\r\n");
-    hello::run();
 
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
@@ -101,7 +103,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let physical_mapping = memory::PhysicalMemoryMapping::from_boot_info(boot_info);
     let mut apic_ready = false;
     if let (Some(mapping), Some(rsdp_address)) = (physical_mapping, Option::<u64>::from(boot_info.rsdp_addr)) {
-        // SAFETY: the bootloader supplied the RSDP and validated direct map.
         match unsafe { arch::x86_64::acpi::discover(rsdp_address, mapping) } {
             Ok(topology) => {
                 serial::write_str("X11-OS: ACPI MADT discovered\r\n");
@@ -118,14 +119,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     arch::x86_64::pic::mask_all();
                     serial::write_str("X11-OS: legacy 8259 masked\r\n");
                     if let Some(mode) = apic.preferred_mode() {
-                        // SAFETY: APIC capabilities came from CPUID and IRQs are disabled.
                         if unsafe { arch::x86_64::apic::enable_preferred_mode(apic) } == Some(mode) {
                             serial::write_str("X11-OS: local APIC mode = ");
                             serial::write_str(match mode {
                                 arch::x86_64::apic::ApicMode::XApic => "xAPIC\r\n",
                                 arch::x86_64::apic::ApicMode::X2Apic => "x2APIC\r\n",
                             });
-                            // SAFETY: direct map is available for xAPIC mode.
                             apic_ready = unsafe { arch::x86_64::local_apic::initialize(mode, Some(mapping)).is_ok() };
                             serial::write_str(if apic_ready { "X11-OS: Local APIC EOI initialized\r\n" } else { "X11-OS: Local APIC EOI initialization failed\r\n" });
                         }
@@ -139,7 +138,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     if let (true, Some(mapping), Some(tsc)) = (apic_ready, physical_mapping, tsc_clock.as_ref()) {
-        // SAFETY: APIC mode and direct physical mapping were initialized above.
         match unsafe { arch::x86_64::lapic_timer::LapicTimer::new(apic.preferred_mode().unwrap(), Some(mapping)) } {
             Ok(mut timer_device) => match timer_device.calibrate(tsc) {
                 Ok(frequency) => {
@@ -182,7 +180,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
-    // SAFETY: runtime is boxed and remains alive for the entire kernel lifetime.
     unsafe { runtime.bind_cpu().expect("runtime must bind to bootstrap CPU"); }
     let _task_a = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_a).expect("task A must spawn");
     let _task_b = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_b).expect("task B must spawn");
@@ -191,8 +188,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_str("X11-OS: preemption proof tasks armed\r\n");
     serial::write_str("X11-OS: interrupts remain disabled until task B starts\r\n");
 
-    // SAFETY: runtime owns all execution bindings and the bootstrap dispatch
-    // targets a fresh task. Task B enables interrupts after A yields to it.
     unsafe { runtime.dispatch_once().expect("initial runtime dispatch must succeed"); }
 
     loop { core::hint::spin_loop(); }
