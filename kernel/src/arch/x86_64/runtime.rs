@@ -26,6 +26,7 @@ pub enum RuntimeError {
     PreemptionDisabled,
     InterruptedState(ExecutionError),
     CpuBinding(RuntimeBindingError),
+    InterruptedTaskRequiresIret,
 }
 
 impl From<YieldError> for RuntimeError {
@@ -62,8 +63,6 @@ impl KernelRuntime {
     pub fn boot_context_mut(&mut self) -> &mut Context { &mut self.boot_context }
     pub fn address(&self) -> u64 { self as *const Self as usize as u64 }
 
-    /// Binds this stable runtime object to the current CPU. Bootstrap currently
-    /// has one CPU; SMP will replace this with a per-CPU runtime owner table.
     pub unsafe fn bind_cpu(&mut self) -> Result<(), RuntimeError> {
         cpu_local::local()
             .bind_runtime(self as *mut Self as *mut ())
@@ -81,8 +80,14 @@ impl KernelRuntime {
         if !self.preemption.is_enabled() { return Err(RuntimeError::PreemptionDisabled); }
         if !self.reschedule.take() { return Ok(false); }
         self.commit_interrupted_state()?;
-        self.dispatch_once()?;
-        Ok(true)
+        match unsafe { self.dispatch_once() } {
+            Ok(()) => Ok(true),
+            Err(error @ RuntimeError::InterruptedTaskRequiresIret) => {
+                self.request_reschedule();
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn commit_interrupted_state(&mut self) -> Result<(), RuntimeError> {
@@ -107,8 +112,6 @@ impl KernelRuntime {
         decision.next.ok_or(RuntimeError::NoRunnableTask)
     }
 
-    /// Selects the scheduler's next task and resolves the architecture return
-    /// mechanism without performing the final CPU transfer.
     pub fn prepare_preemption(&mut self) -> Result<PreemptionPlan, RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
@@ -118,14 +121,6 @@ impl KernelRuntime {
             .ok_or(RuntimeError::MissingExecutionPair)
     }
 
-    /// Handles a timer-triggered preemption while still in the interrupt return
-    /// boundary. Bootstrap targets are deliberately deferred: committing that
-    /// scheduler transition before an iret-capable context exists would leave
-    /// the scheduler claiming task B is Running while the CPU is still in A.
-    ///
-    /// # Safety
-    /// The caller must be executing on the owning CPU with interrupts disabled,
-    /// after the timer entry has captured the current task's interrupted state.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
         self.commit_interrupted_state()?;
         self.request_reschedule();
@@ -148,13 +143,17 @@ impl KernelRuntime {
                 self.request_reschedule();
                 return Ok(InterruptPreemption::ResumeCurrent);
             }
-            PreemptionPlan::IretKernel { state, .. } => state,
+            PreemptionPlan::IretKernel { .. } => {
+                let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
+                if decision.next != Some(candidate) {
+                    return Err(RuntimeError::MissingExecutionPair);
+                }
+                self.manager
+                    .executions
+                    .take_kernel_preempt_state(candidate)
+                    .ok_or(RuntimeError::MissingExecutionPair)?
+            }
         };
-
-        let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
-        if decision.next != Some(candidate) {
-            return Err(RuntimeError::MissingExecutionPair);
-        }
 
         unsafe { cpu_local::local().set_current_task(Some(candidate)); }
         Ok(InterruptPreemption::ReturnToKernel(state))
@@ -171,25 +170,19 @@ impl KernelRuntime {
         self.service_timer(now)
     }
 
-    /// Performs one voluntary scheduler dispatch and synchronizes the CPU-local
-    /// current task identity on both sides of the continuation.
-    ///
-    /// # Safety
-    /// The caller must exclude interrupt/preemption races around the switch
-    /// boundary and the task execution bindings must have valid contexts.
     pub unsafe fn dispatch_once(&mut self) -> Result<(), RuntimeError> {
+        if let Some(candidate) = self.manager.scheduler.next_ready() {
+            if matches!(self.manager.executions.preemption_plan(candidate), Some(PreemptionPlan::IretKernel { .. })) {
+                return Err(RuntimeError::InterruptedTaskRequiresIret);
+            }
+        }
+
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
 
         match decision.previous {
             None => {
-                let next_context = self
-                    .manager
-                    .executions
-                    .get(next)
-                    .ok_or(RuntimeError::MissingExecutionPair)?
-                    .context();
-
+                let next_context = self.manager.executions.get(next).ok_or(RuntimeError::MissingExecutionPair)?.context();
                 unsafe { cpu_local::local().set_current_task(Some(next)); }
                 let result = unsafe {
                     yield_switch::activate_first(
@@ -201,16 +194,9 @@ impl KernelRuntime {
                 result.map_err(RuntimeError::Yield)?;
             }
             Some(previous) => {
-                let (current, next_context) = self
-                    .manager
-                    .executions
-                    .context_pair_mut(previous, next)
-                    .ok_or(RuntimeError::MissingExecutionPair)?;
-
+                let (current, next_context) = self.manager.executions.context_pair_mut(previous, next).ok_or(RuntimeError::MissingExecutionPair)?;
                 unsafe { cpu_local::local().set_current_task(Some(next)); }
-                let result = unsafe {
-                    yield_switch::switch(current as *mut Context, next_context as *const Context)
-                };
+                let result = unsafe { yield_switch::switch(current as *mut Context, next_context as *const Context) };
                 unsafe { cpu_local::local().set_current_task(Some(previous)); }
                 result.map_err(RuntimeError::Yield)?;
             }
