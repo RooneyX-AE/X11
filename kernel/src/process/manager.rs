@@ -37,6 +37,17 @@ impl Slot {
     };
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpawnedProcess {
+    id: ProcessId,
+    binding: ProcessExecutionBinding,
+}
+
+impl SpawnedProcess {
+    pub const fn id(self) -> ProcessId { self.id }
+    pub const fn binding(self) -> ProcessExecutionBinding { self.binding }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessManager {
     slots: [Slot; MAX_PROCESSES],
@@ -54,9 +65,7 @@ impl ProcessManager {
     pub fn register_ready(&mut self, image: ProcessImage) -> Result<ProcessId, ProcessManagerError> {
         for offset in 0..MAX_PROCESSES {
             let index = (self.next_hint + offset) % MAX_PROCESSES;
-            if self.slots[index].image.is_some() {
-                continue;
-            }
+            if self.slots[index].image.is_some() { continue; }
 
             let generation = self.slots[index]
                 .generation
@@ -73,6 +82,25 @@ impl ProcessManager {
             return Ok(id);
         }
         Err(ProcessManagerError::Full)
+    }
+
+    /// Atomically registers a process and attaches its execution identity.
+    /// If binding validation fails, the registration is rolled back.
+    pub fn spawn_ready(
+        &mut self,
+        image: ProcessImage,
+        task: TaskId,
+        execution: ExecutionHandle,
+        address_space: AddressSpaceId,
+    ) -> Result<SpawnedProcess, ProcessManagerError> {
+        let id = self.register_ready(image)?;
+        match self.attach_execution(id, task, execution, address_space) {
+            Ok(binding) => Ok(SpawnedProcess { id, binding }),
+            Err(error) => {
+                let _ = self.remove_registered(id);
+                Err(error)
+            }
+        }
     }
 
     pub fn state(&self, id: ProcessId) -> Result<ProcessState, ProcessManagerError> {
@@ -132,6 +160,14 @@ impl ProcessManager {
 
     pub fn contains(&self, id: ProcessId) -> bool {
         self.slot(id).is_ok()
+    }
+
+    fn remove_registered(&mut self, id: ProcessId) -> Result<(), ProcessManagerError> {
+        let slot = self.slot_mut(id)?;
+        slot.image = None;
+        slot.state = None;
+        slot.binding = None;
+        Ok(())
     }
 
     fn slot(&self, id: ProcessId) -> Result<&Slot, ProcessManagerError> {
@@ -205,6 +241,20 @@ mod tests {
         assert!(manager.attach_execution(id, task, execution, as_id).is_ok());
         manager.start(id).unwrap();
         assert_eq!(manager.state(id), Ok(ProcessState::Running));
+    }
+
+    #[test]
+    fn spawn_ready_rolls_back_on_binding_mismatch() {
+        let mut manager = ProcessManager::new();
+        let task = TaskId::new(3, 1);
+        let wrong_as = AddressSpaceId::new(2).unwrap();
+        assert_eq!(
+            manager.spawn_ready(image(), task, ExecutionHandle::for_task(task), wrong_as),
+            Err(ProcessManagerError::BindingMismatch)
+        );
+        let replacement = manager.register_ready(image()).unwrap();
+        assert_eq!(replacement.index(), 0);
+        assert_eq!(replacement.generation(), 2);
     }
 
     #[test]
