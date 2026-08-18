@@ -27,13 +27,13 @@ pub fn init() {
     }
 
     unsafe {
-        outb(COM1 + 1, 0x00); // Disable interrupts.
-        outb(COM1 + 3, 0x80); // Enable DLAB.
-        outb(COM1, 0x03); // 38400 baud divisor low byte.
-        outb(COM1 + 1, 0x00); // Divisor high byte.
-        outb(COM1 + 3, 0x03); // 8 bits, no parity, one stop bit.
-        outb(COM1 + 2, 0xC7); // Enable FIFO, clear them, 14-byte threshold.
-        outb(COM1 + 4, 0x0B); // IRQs enabled, RTS/DSR set.
+        outb(COM1 + 1, 0x00);
+        outb(COM1 + 3, 0x80);
+        outb(COM1, 0x03);
+        outb(COM1 + 1, 0x00);
+        outb(COM1 + 3, 0x03);
+        outb(COM1 + 2, 0xC7);
+        outb(COM1 + 4, 0x0B);
     }
 
     STATE.store(READY, Ordering::Release);
@@ -71,6 +71,27 @@ pub fn write_usize(mut value: usize) {
         index -= 1;
         digits[index] = b'0' + (value % 10) as u8;
         value /= 10;
+    }
+
+    for byte in &digits[index..] {
+        write_byte(*byte);
+    }
+}
+
+pub fn write_hex(mut value: u64) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut digits = [b'0'; 16];
+    let mut index = digits.len();
+
+    if value == 0 {
+        write_byte(b'0');
+        return;
+    }
+
+    while value != 0 {
+        index -= 1;
+        digits[index] = DIGITS[(value & 0xf) as usize];
+        value >>= 4;
     }
 
     for byte in &digits[index..] {
