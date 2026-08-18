@@ -185,30 +185,43 @@ impl LapicTimer {
     }
 
     unsafe fn write_lvt(&mut self, value: u32) -> Result<(), LapicTimerError> {
-        unsafe { self.write_register(LVT_TIMER_OFFSET, self.lvt_timer.as_mut(), value) }
+        let mode = self.mode;
+        let mmio_base = self.mmio_base;
+        let msr = self.lvt_timer.as_mut();
+        unsafe { Self::write_register(mode, mmio_base, LVT_TIMER_OFFSET, msr, value) }
     }
 
     unsafe fn write_initial(&mut self, value: u32) -> Result<(), LapicTimerError> {
-        unsafe { self.write_register(TIMER_INIT_COUNT_OFFSET, self.init_count.as_mut(), value) }
+        let mode = self.mode;
+        let mmio_base = self.mmio_base;
+        let msr = self.init_count.as_mut();
+        unsafe { Self::write_register(mode, mmio_base, TIMER_INIT_COUNT_OFFSET, msr, value) }
     }
 
     unsafe fn write_divide(&mut self, value: u32) -> Result<(), LapicTimerError> {
-        unsafe { self.write_register(TIMER_DIVIDE_OFFSET, self.divide_config.as_mut(), value) }
+        let mode = self.mode;
+        let mmio_base = self.mmio_base;
+        let msr = self.divide_config.as_mut();
+        unsafe { Self::write_register(mode, mmio_base, TIMER_DIVIDE_OFFSET, msr, value) }
     }
 
     unsafe fn read_current(&mut self) -> Result<u32, LapicTimerError> {
-        unsafe { self.read_register(TIMER_CURRENT_COUNT_OFFSET, self.current_count.as_mut()) }
+        let mode = self.mode;
+        let mmio_base = self.mmio_base;
+        let msr = self.current_count.as_mut();
+        unsafe { Self::read_register(mode, mmio_base, TIMER_CURRENT_COUNT_OFFSET, msr) }
     }
 
     unsafe fn write_register(
-        &mut self,
+        mode: ApicMode,
+        mmio_base: Option<u64>,
         offset: u64,
         msr: Option<&mut Msr>,
         value: u32,
     ) -> Result<(), LapicTimerError> {
-        match self.mode {
+        match mode {
             ApicMode::XApic => {
-                let base = self.mmio_base.ok_or(LapicTimerError::InvalidMapping)?;
+                let base = mmio_base.ok_or(LapicTimerError::InvalidMapping)?;
                 let address = base
                     .checked_add(offset)
                     .ok_or(LapicTimerError::InvalidMapping)?
@@ -229,13 +242,14 @@ impl LapicTimer {
     }
 
     unsafe fn read_register(
-        &mut self,
+        mode: ApicMode,
+        mmio_base: Option<u64>,
         offset: u64,
         msr: Option<&mut Msr>,
     ) -> Result<u32, LapicTimerError> {
-        match self.mode {
+        match mode {
             ApicMode::XApic => {
-                let base = self.mmio_base.ok_or(LapicTimerError::InvalidMapping)?;
+                let base = mmio_base.ok_or(LapicTimerError::InvalidMapping)?;
                 let address = base
                     .checked_add(offset)
                     .ok_or(LapicTimerError::InvalidMapping)?
