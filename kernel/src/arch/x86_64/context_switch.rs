@@ -68,7 +68,7 @@ pub fn bootstrap_kernel_context(
     stack_top: u64,
     activation: &ActivationRecord,
 ) -> Option<Context> {
-    if stack_top == 0 || activation.entry() == 0 {
+    if stack_top == 0 {
         return None;
     }
     let aligned_stack = stack_top & !15;
@@ -80,6 +80,6 @@ pub fn bootstrap_kernel_context(
         r13: 0,
         r14: 0,
         r15: 0,
-        rip: activation.trampoline().unwrap_or(activation.entry()),
+        rip: activation.entry() as usize as u64,
     })
 }
