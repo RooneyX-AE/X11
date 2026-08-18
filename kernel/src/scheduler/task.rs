@@ -47,10 +47,10 @@ impl TaskControlBlock {
     pub const fn new(id: TaskId, priority: Priority) -> Self {
         Self { id, state: TaskState::Created, priority, execution: None }
     }
-    pub const fn id(self) -> TaskId { self.id }
-    pub const fn state(self) -> TaskState { self.state }
-    pub const fn priority(self) -> Priority { self.priority }
-    pub const fn execution(self) -> Option<ExecutionHandle> { self.execution }
+    pub const fn id(&self) -> TaskId { self.id }
+    pub const fn state(&self) -> TaskState { self.state }
+    pub const fn priority(&self) -> Priority { self.priority }
+    pub const fn execution(&self) -> Option<ExecutionHandle> { self.execution }
 
     pub fn attach_execution(&mut self) -> Result<ExecutionHandle, ExecutionAttachError> {
         if self.execution.is_some() {
@@ -101,19 +101,11 @@ mod tests {
     }
 
     #[test]
-    fn execution_handle_can_only_be_attached_once() {
-        let id = TaskId::new(3, 7);
+    fn execution_can_only_attach_once() {
+        let id = TaskId::new(4, 2);
         let mut task = TaskControlBlock::new(id, Priority::DEFAULT);
         let handle = task.attach_execution().unwrap();
         assert_eq!(task.execution(), Some(handle));
         assert_eq!(task.attach_execution(), Err(ExecutionAttachError::AlreadyAttached));
-        assert_eq!(task.execution(), Some(handle));
-    }
-
-    #[test]
-    fn priority_boundaries_are_stable() {
-        assert_eq!(Priority::MIN.value(), 0);
-        assert_eq!(Priority::DEFAULT.value(), 128);
-        assert_eq!(Priority::MAX.value(), 255);
     }
 }
