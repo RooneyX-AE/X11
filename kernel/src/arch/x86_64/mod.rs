@@ -23,6 +23,7 @@ pub mod preempt_return;
 pub mod preemption_plan;
 pub mod runtime;
 pub mod tsc;
+pub mod user_activation;
 pub mod user_context;
 pub mod user_entry;
 pub mod user_launch;
