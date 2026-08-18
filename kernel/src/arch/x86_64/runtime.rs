@@ -11,6 +11,7 @@ use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
 
 use super::context_switch::Context;
 use super::cpu_local;
+use super::execution::ExecutionError;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::yield_switch::{self, YieldError};
 
@@ -21,6 +22,7 @@ pub enum RuntimeError {
     MissingExecutionPair,
     Yield(YieldError),
     PreemptionDisabled,
+    InterruptedState(ExecutionError),
 }
 
 impl From<YieldError> for RuntimeError {
@@ -61,8 +63,22 @@ impl KernelRuntime {
     pub fn safe_reschedule_point(&mut self) -> Result<bool, RuntimeError> {
         if !self.preemption.is_enabled() { return Err(RuntimeError::PreemptionDisabled); }
         if !self.reschedule.take() { return Ok(false); }
+        self.commit_interrupted_state()?;
         self.dispatch_once()?;
         Ok(true)
+    }
+
+    fn commit_interrupted_state(&mut self) -> Result<(), RuntimeError> {
+        let Some((task_id, snapshot)) = cpu_local::local().take_interrupted() else {
+            return Ok(());
+        };
+
+        let binding = self
+            .manager
+            .executions
+            .get_mut(task_id)
+            .ok_or(RuntimeError::MissingExecutionPair)?;
+        binding.install_interrupted(snapshot).map_err(RuntimeError::InterruptedState)
     }
 
     pub fn spawn(&mut self, priority: Priority, entry: extern "C" fn() -> !) -> Result<TaskId, RuntimeError> {
