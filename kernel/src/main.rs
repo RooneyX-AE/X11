@@ -11,6 +11,7 @@ mod interrupt_controller;
 mod interrupts;
 mod memory;
 mod serial;
+mod timer;
 
 use alloc::vec::Vec;
 use bootloader_api::config::{BootloaderConfig, Mapping};
@@ -34,6 +35,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
+
+    let apic = arch::x86_64::apic::ApicCapabilities::detect();
+    serial::write_str("X11-OS: local APIC = ");
+    serial::write_str(if apic.apic { "supported\r\n" } else { "unsupported\r\n" });
+    serial::write_str("X11-OS: x2APIC = ");
+    serial::write_str(if apic.x2apic { "supported\r\n" } else { "unsupported\r\n" });
 
     let memory = memory::summarize_boot_map(&boot_info.memory_regions);
     serial::write_str("X11-OS: usable memory bytes = ");
