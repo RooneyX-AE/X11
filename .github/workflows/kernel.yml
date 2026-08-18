@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 ovmf
-      - name: Boot kernel and verify paging path
+      - name: Boot kernel and verify memory path
         shell: bash
         run: |
           set -o pipefail
@@ -47,3 +47,5 @@ jobs:
           grep -q 'X11-OS: CPU foundation initialized' qemu.log
           grep -q 'X11-OS: page mapping verified' qemu.log
           grep -q 'X11-OS: page unmapping verified' qemu.log
+          grep -q 'X11-OS: heap initialized' qemu.log
+          grep -q 'X11-OS: heap allocation verified' qemu.log
