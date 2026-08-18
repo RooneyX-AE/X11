@@ -4,7 +4,6 @@
 //! saved continuation, kernel stacks, activation trampoline, and context-switch
 //! ABI cooperate without requiring preemption or userspace state.
 
-use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::activation::ActivationRecord;
