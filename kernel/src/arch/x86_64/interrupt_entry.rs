@@ -1,9 +1,10 @@
 //! x86_64 interrupt-entry register frame.
 //!
 //! The timer entry stub owns the exact assembly/Rust ABI. It saves all
-//! general-purpose registers, captures the interrupted RSP before touching the
-//! stack, preserves the CPU-owned return frame, aligns the stack for Rust, and
-//! returns with `iretq` unless the runtime selects a kernel preemption transfer.
+//! general-purpose registers, captures the interrupted RSP without clobbering
+//! any register, preserves the CPU-owned return frame, aligns the stack for
+//! Rust, and returns with `iretq` unless the runtime selects a kernel
+//! preemption transfer.
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -75,8 +76,6 @@ extern "C" fn timer_entry_rust(
             .capture_interrupted(registers, frame, resume_rsp)
     };
 
-    // Acknowledge the timer before making a scheduler decision. Any failure in
-    // the deferred runtime path simply returns to the interrupted task.
     crate::arch::x86_64::idt::record_timer_interrupt();
 
     let Some(runtime_ptr) = crate::arch::x86_64::cpu_local::local().runtime_ptr() else {
@@ -89,9 +88,7 @@ extern "C" fn timer_entry_rust(
     };
 
     if let Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToKernel(state)) = outcome {
-        unsafe {
-            crate::arch::x86_64::preempt_return::return_to_kernel(&state);
-        }
+        unsafe { crate::arch::x86_64::preempt_return::return_to_kernel(&state); }
     }
 }
 
@@ -99,7 +96,6 @@ extern "C" fn timer_entry_rust(
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_entry() {
     core::arch::naked_asm!(
-        "mov rdx, rsp",
         "push r15",
         "push r14",
         "push r13",
@@ -115,13 +111,15 @@ pub unsafe extern "C" fn timer_entry() {
         "push rdx",
         "push rcx",
         "push rax",
+        // 15 pushes = 120 bytes, so original CPU RSP is current RSP + 120.
+        "mov rdx, rsp",
+        "add rdx, 120",
         "mov rax, rsp",
         "and rsp, -16",
         "sub rsp, 16",
         "mov [rsp], rax",
         "mov rdi, rax",
         "lea rsi, [rax + 120]",
-        "mov rdx, [rax + 16]",
         "call {rust_hook}",
         "mov rax, [rsp]",
         "mov rsp, rax",
