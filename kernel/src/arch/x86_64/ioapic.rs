@@ -42,21 +42,11 @@ impl RedirectionEntry {
     pub const fn encode(self) -> (u32, u32) {
         let mut low = self.vector as u32;
         low |= ((self.delivery_mode as u32) & 0x7) << 8;
-        if self.destination_mode_logical {
-            low |= 1 << 11;
-        }
-        if self.delivery_pending {
-            low |= 1 << 12;
-        }
-        if self.active_low {
-            low |= 1 << 13;
-        }
-        if self.level_triggered {
-            low |= 1 << 15;
-        }
-        if self.masked {
-            low |= 1 << 16;
-        }
+        if self.destination_mode_logical { low |= 1 << 11; }
+        if self.delivery_pending { low |= 1 << 12; }
+        if self.active_low { low |= 1 << 13; }
+        if self.level_triggered { low |= 1 << 15; }
+        if self.masked { low |= 1 << 16; }
         (low, (self.destination as u32) << 24)
     }
 }
@@ -69,15 +59,10 @@ pub struct IoApic {
 
 impl IoApic {
     pub const fn new(mapping: PhysicalMemoryMapping, physical_base: u64) -> Self {
-        Self {
-            mapping,
-            physical_base,
-        }
+        Self { mapping, physical_base }
     }
 
-    pub const fn physical_base(&self) -> u64 {
-        self.physical_base
-    }
+    pub const fn physical_base(&self) -> u64 { self.physical_base }
 
     /// Returns the highest redirection-table index implemented by this I/O
     /// APIC, as reported by IOAPICVER bits 23:16.
@@ -102,18 +87,10 @@ impl IoApic {
     }
 
     pub unsafe fn write_register(&self, register: u8, value: u32) -> bool {
-        let Some(select_address) = self.physical_base.checked_add(IOREGSEL) else {
-            return false;
-        };
-        let Some(data_address) = self.physical_base.checked_add(IOWIN) else {
-            return false;
-        };
-        let Some(select) = self.mapping.translate(select_address) else {
-            return false;
-        };
-        let Some(data) = self.mapping.translate(data_address) else {
-            return false;
-        };
+        let Some(select_address) = self.physical_base.checked_add(IOREGSEL) else { return false; };
+        let Some(data_address) = self.physical_base.checked_add(IOWIN) else { return false; };
+        let Some(select) = self.mapping.translate(select_address) else { return false; };
+        let Some(data) = self.mapping.translate(data_address) else { return false; };
 
         // SAFETY: Same MMIO invariant as `read_register`.
         unsafe {
@@ -124,18 +101,10 @@ impl IoApic {
     }
 
     pub unsafe fn write_redirection(&self, index: u8, entry: RedirectionEntry) -> bool {
-        let Some(max_index) = unsafe { self.max_redirection_index() } else {
-            return false;
-        };
-        if index > max_index {
-            return false;
-        }
-        let Some(offset) = index.checked_mul(2) else {
-            return false;
-        };
-        let Some(register) = REDIRECTION_TABLE_BASE.checked_add(offset) else {
-            return false;
-        };
+        let Some(max_index) = (unsafe { self.max_redirection_index() }) else { return false; };
+        if index > max_index { return false; }
+        let Some(offset) = index.checked_mul(2) else { return false; };
+        let Some(register) = REDIRECTION_TABLE_BASE.checked_add(offset) else { return false; };
         let (low, high) = entry.encode();
         // SAFETY: Register addressing has been checked above and each write is
         // validated by `write_register`.
