@@ -14,6 +14,7 @@ use super::context_switch::Context;
 use super::execution::{ExecutionError, X86ExecutionBinding};
 use super::interrupted_state::InterruptedState;
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+use super::preemption_plan::PreemptionPlan;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RegistryInsertError {
@@ -78,11 +79,20 @@ impl ExecutionRegistry {
         task_id: TaskId,
         registers: *const SavedRegisters,
         return_frame: InterruptReturnFrame,
+        resume_rsp: u64,
     ) -> Result<InterruptedState, InterruptCaptureError> {
         let binding = self.get_mut(task_id).ok_or(InterruptCaptureError::TaskNotFound)?;
-        unsafe { binding.capture_interrupted(registers, return_frame) }
+        unsafe { binding.capture_interrupted(registers, return_frame, resume_rsp) }
             .map_err(InterruptCaptureError::Execution)?;
         binding.interrupted().ok_or(InterruptCaptureError::Execution(ExecutionError::InvalidStack))
+    }
+
+    pub fn preemption_plan(&self, task_id: TaskId) -> Option<PreemptionPlan> {
+        let binding = self.get(task_id)?;
+        match binding.interrupted().and_then(InterruptedState::kernel_preempt_state) {
+            Some(state) => Some(PreemptionPlan::IretKernel { task_id, state }),
+            None => Some(PreemptionPlan::Bootstrap { task_id }),
+        }
     }
 
     pub fn context_pair_mut(&mut self, current: TaskId, next: TaskId) -> Option<(&mut Context, &Context)> {
@@ -177,5 +187,13 @@ mod tests {
         let handle = ExecutionHandle::for_task(TaskId::new(5, 1));
         registry.insert(handle, never_returns).unwrap();
         assert!(registry.context_pair_mut(handle.task_id(), handle.task_id()).is_none());
+    }
+
+    #[test]
+    fn new_task_uses_bootstrap_plan() {
+        let mut registry = ExecutionRegistry::new();
+        let task = TaskId::new(6, 1);
+        registry.insert(ExecutionHandle::for_task(task), never_returns).unwrap();
+        assert!(matches!(registry.preemption_plan(task), Some(super::PreemptionPlan::Bootstrap { .. })));
     }
 }
