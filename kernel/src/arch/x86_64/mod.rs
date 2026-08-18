@@ -17,3 +17,7 @@ pub fn init() {
     gdt::init();
     idt::init();
 }
+
+pub fn timer_ticks() -> u64 {
+    idt::timer_ticks()
+}
