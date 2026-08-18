@@ -1,11 +1,9 @@
 //! x86_64 interrupt-entry register frame.
 //!
-//! The timer entry stub is deliberately separate from the Rust
-//! `extern "x86-interrupt"` path. It owns the exact assembly/Rust ABI, saves all
-//! general-purpose registers, exposes the CPU-owned return frame, and returns
-//! with `iretq` without changing scheduler state.
+//! The timer entry stub owns the exact assembly/Rust ABI. It saves all
+//! general-purpose registers, preserves the CPU-owned return frame, aligns the
+//! stack for the Rust call, and returns with `iretq` without switching tasks.
 
-/// General-purpose registers saved by the timer entry stub.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SavedRegisters {
@@ -36,33 +34,19 @@ unsafe impl Send for InterruptReturnFrame {}
 unsafe impl Sync for InterruptReturnFrame {}
 
 impl InterruptReturnFrame {
-    pub const unsafe fn from_raw(raw: *mut u64) -> Self {
-        Self { raw }
-    }
+    pub const unsafe fn from_raw(raw: *mut u64) -> Self { Self { raw } }
 
-    pub unsafe fn rip(self) -> u64 {
-        unsafe { *self.raw.add(0) }
-    }
-
-    pub unsafe fn cs(self) -> u64 {
-        unsafe { *self.raw.add(1) }
-    }
-
-    pub unsafe fn rflags(self) -> u64 {
-        unsafe { *self.raw.add(2) }
-    }
+    pub unsafe fn rip(self) -> u64 { unsafe { *self.raw.add(0) } }
+    pub unsafe fn cs(self) -> u64 { unsafe { *self.raw.add(1) } }
+    pub unsafe fn rflags(self) -> u64 { unsafe { *self.raw.add(2) } }
 
     pub unsafe fn rsp(self) -> Option<u64> {
-        if unsafe { self.cs() } & 3 == 0 {
-            return None;
-        }
+        if unsafe { self.cs() } & 3 == 0 { return None; }
         Some(unsafe { *self.raw.add(3) })
     }
 
     pub unsafe fn ss(self) -> Option<u64> {
-        if unsafe { self.cs() } & 3 == 0 {
-            return None;
-        }
+        if unsafe { self.cs() } & 3 == 0 { return None; }
         Some(unsafe { *self.raw.add(4) })
     }
 
@@ -78,29 +62,25 @@ const CROSS_CPL_FRAME_BYTES: usize = 5 * core::mem::size_of::<u64>();
 const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
-/// Rust-side timer entry hook.
-///
-/// The current implementation only acknowledges the timer and records the
-/// deferred event. Scheduler policy is intentionally not executed here.
 #[inline(never)]
 extern "C" fn timer_entry_rust(
     _registers: *mut SavedRegisters,
     return_frame: *mut u64,
 ) {
     let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
-    // The current raw timer path is a kernel-only path. If this invariant ever
-    // changes, the entry ABI must explicitly support the user-return frame.
-    if unsafe { frame.is_kernel_return() } {
-        crate::arch::x86_64::idt::record_timer_interrupt();
+    unsafe {
+        // Only the first three words are consumed here, so both kernel and
+        // privilege-transition interrupt frames are safe to acknowledge.
+        let _ = (frame.rip(), frame.cs(), frame.rflags());
     }
+    crate::arch::x86_64::idt::record_timer_interrupt();
 }
 
 /// Raw timer-entry ABI.
 ///
-/// # Safety
-/// The symbol is valid only as an x86_64 IDT interrupt entry. The caller must
-/// install it with `Entry::set_handler_addr()` only after verifying this exact
-/// ABI.
+/// The interrupted stack may have arbitrary alignment, so the stub realigns a
+/// temporary call stack and restores the original saved-register pointer before
+/// returning. The CPU return frame is never moved.
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_entry() {
     core::arch::naked_asm!(
@@ -119,9 +99,15 @@ pub unsafe extern "C" fn timer_entry() {
         "push rdx",
         "push rcx",
         "push rax",
-        "mov rdi, rsp",
-        "lea rsi, [rsp + 120]",
+        "mov rax, rsp",
+        "and rsp, -16",
+        "sub rsp, 16",
+        "mov [rsp], rax",
+        "mov rdi, rax",
+        "lea rsi, [rax + 120]",
         "call {rust_hook}",
+        "mov rax, [rsp]",
+        "mov rsp, rax",
         "pop rax",
         "pop rcx",
         "pop rdx",
