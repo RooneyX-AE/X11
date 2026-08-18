@@ -2,6 +2,7 @@
 
 mod gdt;
 mod idt;
+pub mod paging;
 
 pub fn init() {
     gdt::init();
