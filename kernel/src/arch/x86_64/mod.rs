@@ -1,6 +1,7 @@
 //! x86_64-specific CPU and platform initialization.
 
 pub mod acpi;
+pub mod activation;
 pub mod apic;
 pub mod context_switch;
 pub mod dispatch;
