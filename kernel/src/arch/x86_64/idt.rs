@@ -1,11 +1,10 @@
 //! CPU exception and early interrupt handling.
 //!
-//! Exception handlers remain explicit, while the timer vector is installed as
-//! the first hardware-interrupt entry. Timer handling only updates an atomic
-//! counter and completes the APIC interrupt, keeping scheduling policy out of
-//! the architecture layer.
+//! Interrupt handlers stay intentionally small. Timer IRQ delivery records a
+//! pending event and acknowledges the local APIC; scheduler policy is serviced
+//! outside the interrupt context.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use spin::Once;
 use x86_64::registers::control::Cr2;
@@ -18,6 +17,7 @@ use super::gdt::DOUBLE_FAULT_IST_INDEX;
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static LAST_PAGE_FAULT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
+static TIMER_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
     let idt = IDT.call_once(|| {
@@ -63,11 +63,17 @@ extern "x86-interrupt" fn double_fault_handler(_stack_frame: InterruptStackFrame
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    TIMER_PENDING.store(true, Ordering::Release);
+
     if let Some(event) = InterruptEvent::new(InterruptSource::Timer) {
         crate::arch::x86_64::local_apic::end_of_interrupt(event);
     }
 }
 
 pub fn timer_ticks() -> u64 {
-    TIMER_TICKS.load(Ordering::Relaxed)
+    TIMER_TICKS.load(Ordering::Acquire)
+}
+
+pub fn take_timer_pending() -> bool {
+    TIMER_PENDING.swap(false, Ordering::AcqRel)
 }
