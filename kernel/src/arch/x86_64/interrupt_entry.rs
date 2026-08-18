@@ -103,7 +103,7 @@ pub unsafe extern "C" fn timer_entry() {
         "mov [rsp], rax",
         "mov rdi, rax",
         "lea rsi, [rax + 120]",
-        "mov rdx, [rax + 24]",
+        "mov rdx, [rax + 16]",
         "call {rust_hook}",
         "mov rax, [rsp]",
         "mov rsp, rax",
