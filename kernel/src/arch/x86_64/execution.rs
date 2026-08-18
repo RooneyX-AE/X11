@@ -50,23 +50,13 @@ impl X86ExecutionBinding {
         let context = bootstrap_kernel_context(stack_top, &activation)
             .ok_or(ExecutionError::InvalidStack)?;
 
-        Ok(Self {
-            task_id,
-            stack,
-            activation,
-            context,
-            interrupted: None,
-        })
+        Ok(Self { task_id, stack, activation, context, interrupted: None })
     }
 
     pub const fn context(&self) -> &Context { &self.context }
-
     pub fn context_mut(&mut self) -> &mut Context { &mut self.context }
-
     pub const fn activation(&self) -> &ActivationRecord { &self.activation }
-
     pub fn stack_size(&self) -> usize { self.stack.len() }
-
     pub const fn interrupted(&self) -> Option<InterruptedState> { self.interrupted }
 
     /// Copies the interrupted CPU state out of the transient IRQ stack.
@@ -83,6 +73,13 @@ impl X86ExecutionBinding {
             return Err(ExecutionError::InterruptedStateAlreadyPresent);
         }
         let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
+        self.install_interrupted(snapshot)
+    }
+
+    pub fn install_interrupted(&mut self, snapshot: InterruptedState) -> Result<(), ExecutionError> {
+        if self.interrupted.is_some() {
+            return Err(ExecutionError::InterruptedStateAlreadyPresent);
+        }
         if !snapshot.is_valid() {
             return Err(ExecutionError::InvalidStack);
         }
@@ -90,9 +87,7 @@ impl X86ExecutionBinding {
         Ok(())
     }
 
-    pub const fn take_interrupted(&mut self) -> Option<InterruptedState> {
-        self.interrupted.take()
-    }
+    pub const fn take_interrupted(&mut self) -> Option<InterruptedState> { self.interrupted.take() }
 }
 
 impl ExecutionBinding for X86ExecutionBinding {
@@ -122,9 +117,20 @@ impl ExecutionBinding for X86ExecutionBinding {
 #[cfg(test)]
 mod tests {
     use super::{X86ExecutionBinding, KERNEL_STACK_SIZE};
+    use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::scheduler::{ExecutionBinding, TaskId};
 
     extern "C" fn never_returns() -> ! { loop {} }
+
+    fn kernel_snapshot() -> super::InterruptedState {
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000;
+        raw[1] = 0x10;
+        raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        unsafe { super::InterruptedState::capture(&registers, frame) }
+    }
 
     #[test]
     fn execution_binding_owns_stable_stack_and_activation() {
@@ -134,6 +140,18 @@ mod tests {
         assert_eq!(binding.context().r12, binding.activation().pointer());
         assert!(binding.is_bootstrapped());
         assert!(binding.validate().is_ok());
+        assert!(binding.interrupted().is_none());
+    }
+
+    #[test]
+    fn interrupted_snapshot_is_owned_once() {
+        let mut binding = X86ExecutionBinding::new(TaskId::new(2, 1), never_returns).unwrap();
+        assert!(binding.install_interrupted(kernel_snapshot()).is_ok());
+        assert!(matches!(
+            binding.install_interrupted(kernel_snapshot()),
+            Err(super::ExecutionError::InterruptedStateAlreadyPresent)
+        ));
+        assert!(binding.take_interrupted().is_some());
         assert!(binding.interrupted().is_none());
     }
 }
