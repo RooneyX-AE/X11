@@ -14,6 +14,7 @@ pub mod kernel_task;
 pub mod lapic_timer;
 pub mod local_apic;
 pub mod preemption;
+pub mod runtime;
 pub mod tsc;
 mod gdt;
 mod idt;
