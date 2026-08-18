@@ -185,7 +185,7 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::{Priority, Scheduler, SleepQueue, TaskState};
+    use super::{Priority, Scheduler, SleepEntry, SleepQueue, TaskState, WaitQueue};
 
     #[test]
     fn scheduler_round_robin_cycles_a_b_a_b() {
@@ -243,9 +243,57 @@ mod tests {
         assert_eq!(scheduler.schedule_next().next, Some(task));
 
         let mut sleepers = SleepQueue::new();
-        assert!(sleepers.insert(super::SleepEntry::new(50, task)));
+        assert!(sleepers.insert(SleepEntry::new(50, task)));
         assert_eq!(scheduler.sleep_current_until(100, &mut sleepers), Err(super::SchedulerError::SleepQueueAlreadyContainsTask));
         assert_eq!(scheduler.current(), Some(task));
         assert_eq!(scheduler.state(task), Some(TaskState::Running));
+    }
+
+    #[test]
+    fn block_and_wake_preserve_fifo_and_ready_state() {
+        let mut scheduler = Scheduler::new();
+        let a = scheduler.create_task(Priority::DEFAULT);
+        let b = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(a));
+        assert!(scheduler.make_ready(b));
+        assert_eq!(scheduler.schedule_next().next, Some(a));
+
+        let mut waiters = WaitQueue::new();
+        assert_eq!(scheduler.block_current_on(&mut waiters), Ok(a));
+        assert_eq!(scheduler.current(), None);
+        assert_eq!(scheduler.state(a), Some(TaskState::Blocked));
+        assert_eq!(waiters.peek(), Some(a));
+
+        assert_eq!(scheduler.schedule_next().next, Some(b));
+        assert_eq!(scheduler.wake_one(&mut waiters), Some(a));
+        assert_eq!(scheduler.state(a), Some(TaskState::Ready));
+        assert_eq!(scheduler.next_ready(), Some(a));
+    }
+
+    #[test]
+    fn exit_current_removes_task_and_clears_cpu_owner() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(task));
+        assert_eq!(scheduler.schedule_next().next, Some(task));
+        assert!(scheduler.exit_current());
+        assert_eq!(scheduler.current(), None);
+        assert_eq!(scheduler.state(task), None);
+        assert_eq!(scheduler.next_ready(), None);
+        assert_eq!(scheduler.task_count(), 0);
+    }
+
+    #[test]
+    fn stale_waiter_id_is_ignored_after_task_exit() {
+        let mut scheduler = Scheduler::new();
+        let old = scheduler.create_task(Priority::DEFAULT);
+        let mut waiters = WaitQueue::new();
+        // Queue stale membership directly to model an external cancellation path.
+        assert!(waiters.enqueue(old).is_ok());
+        let replacement = scheduler.create_task(Priority::DEFAULT);
+        assert_ne!(old, replacement);
+        assert_eq!(scheduler.wake_one(&mut waiters), None);
+        assert_eq!(scheduler.state(replacement), Some(TaskState::Created));
+        assert!(waiters.is_empty());
     }
 }
