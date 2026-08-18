@@ -97,6 +97,7 @@ jobs:
 
           required = [
               "X11-OS: kernel entry reached",
+              "Hello World from X11-OS!",
               "X11-OS: CPU foundation initialized",
               "X11-OS: invariant TSC clocksource available",
               "X11-OS: ACPI MADT discovered",
