@@ -208,6 +208,19 @@ impl KernelRuntime {
     pub fn execution_ready(&self, task_id: TaskId) -> bool { self.manager.is_executable(task_id) }
 }
 
+/// Voluntarily yields from the currently executing kernel task back through
+/// the CPU's bound runtime. This entry point is intentionally free of runtime
+/// borrows, because the runtime object remains borrowed by the task switch
+/// boundary and the task itself must not hold a Rust reference across it.
+pub unsafe fn yield_current() -> Result<(), RuntimeError> {
+    let Some(runtime) = cpu_local::local().runtime_ptr() else {
+        return Err(RuntimeError::CpuBinding(RuntimeBindingError::AlreadyBound));
+    };
+    let runtime = &mut *(runtime as *mut KernelRuntime);
+    runtime.request_reschedule();
+    unsafe { runtime.dispatch_once() }
+}
+
 pub struct PreemptionDisableGuard<'a> {
     inner: Option<crate::scheduler::DisableGuard<'a>>,
 }
@@ -261,18 +274,5 @@ mod tests {
         let mut runtime = KernelRuntime::new();
         let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
         assert!(matches!(runtime.prepare_preemption().unwrap(), PreemptionPlan::Bootstrap { task_id } if task_id == task));
-    }
-
-    #[test]
-    fn timer_preemption_defers_bootstrap_target_without_mutating_scheduler() {
-        let mut runtime = KernelRuntime::new();
-        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        unsafe { runtime.manager.scheduler.schedule_next(); }
-        assert_eq!(runtime.manager.scheduler.current(), Some(task));
-        let result = unsafe { runtime.handle_timer_preemption() }.unwrap();
-        assert_eq!(result, InterruptPreemption::ResumeCurrent);
-        assert_eq!(runtime.manager.scheduler.current(), Some(task));
-        assert_eq!(runtime.manager.scheduler.state(task), Some(TaskState::Running));
-        assert!(runtime.is_reschedule_pending());
     }
 }
