@@ -14,7 +14,7 @@ mod wait_queue;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-pub use execution::{ExecutionBinding, ExecutionHandle, ExecutionState};
+pub use execution::{ExecutionBinding, ExecutionHandle};
 pub use reschedule::{DisableGuard, PreemptionGate, RescheduleRequest};
 pub use run_queue::RunQueue;
 pub use sleep_queue::{SleepEntry, SleepQueue};
