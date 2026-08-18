@@ -5,6 +5,24 @@
 
 use super::TaskId;
 
+/// Opaque token proving that a task has an execution binding.
+///
+/// The token does not expose architecture-specific storage. Its identity is
+/// tied to the generational task ID, so a reused task slot cannot inherit the
+/// execution binding of an older task instance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct ExecutionHandle(TaskId);
+
+impl ExecutionHandle {
+    pub const fn for_task(task_id: TaskId) -> Self {
+        Self(task_id)
+    }
+
+    pub const fn task_id(self) -> TaskId {
+        self.0
+    }
+}
+
 /// Minimal execution binding owned by a task.
 ///
 /// The binding is deliberately opaque to the generic scheduler. Architecture
@@ -63,8 +81,17 @@ impl ExecutionBinding for ExecutionState {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionBinding, ExecutionState};
+    use super::{ExecutionBinding, ExecutionHandle, ExecutionState};
     use crate::scheduler::TaskId;
+
+    #[test]
+    fn execution_handle_is_bound_to_generational_task_id() {
+        let task = TaskId::new(4, 2);
+        let replacement = TaskId::new(4, 3);
+        let handle = ExecutionHandle::for_task(task);
+        assert_eq!(handle.task_id(), task);
+        assert_ne!(handle.task_id(), replacement);
+    }
 
     #[test]
     fn execution_state_starts_unbootstrapped() {
