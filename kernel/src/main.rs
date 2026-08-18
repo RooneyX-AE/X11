@@ -8,8 +8,9 @@ mod memory;
 mod serial;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
-use bootloader_api::{BootInfo, entry_point};
+use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
+use memory::{FrameAllocator, PageTableMapper};
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
@@ -37,16 +38,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_usize(memory.malformed_regions() as usize);
     serial::write_str("\r\n");
 
-    if let Some(mapping) = memory::PhysicalMemoryMapping::from_boot_info(boot_info) {
-        serial::write_str("X11-OS: physical memory mapping enabled at 0x");
-        serial::write_hex(mapping.offset());
-        serial::write_str("\r\n");
-    } else {
-        serial::write_str("X11-OS: physical memory mapping unavailable\r\n");
+    let physical_mapping = memory::PhysicalMemoryMapping::from_boot_info(boot_info);
+    match physical_mapping {
+        Some(mapping) => {
+            serial::write_str("X11-OS: physical memory mapping enabled at 0x");
+            serial::write_hex(mapping.offset());
+            serial::write_str("\r\n");
+        }
+        None => {
+            serial::write_str("X11-OS: physical memory mapping unavailable\r\n");
+        }
     }
 
     let mut frame_allocator = memory::EarlyFrameAllocator::new(&boot_info.memory_regions);
-    match memory::FrameAllocator::allocate_frame(&mut frame_allocator) {
+    let first_frame = frame_allocator.allocate_frame();
+    match first_frame {
         Some(frame) => {
             serial::write_str("X11-OS: first free frame = 0x");
             serial::write_hex(frame.start_address());
@@ -55,6 +61,54 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         None => {
             serial::write_str("X11-OS: no usable physical frame available\r\n");
         }
+    }
+
+    if let (Some(mapping), Some(frame)) = (physical_mapping, first_frame) {
+        let page_start = memory::KERNEL_SPACE_START + 0x20_0000;
+        let page = memory::Page4K::from_start_address(page_start)
+            .expect("kernel mapping test page must be aligned");
+
+        // SAFETY: The bootloader established the complete physical-memory
+        // direct mapping, and this mapper is initialized exactly once here.
+        let mut mapper = unsafe {
+            memory::X86PageTableMapper::new(
+                mapping.offset(),
+                &mut frame_allocator,
+                memory::KERNEL_ADDRESS_SPACE,
+            )
+        };
+
+        if mapper.translate(page.start_address()).is_none() {
+            match mapper.map_page(page, frame.start_address()) {
+                Ok(flush) => {
+                    flush.flush();
+                    if mapper.translate(page.start_address()) == Some(frame.start_address()) {
+                        serial::write_str("X11-OS: page mapping verified\r\n");
+                    } else {
+                        serial::write_str("X11-OS: page mapping verification failed\r\n");
+                    }
+
+                    match mapper.unmap_page(page) {
+                        Ok((unmapped_frame, flush)) => {
+                            flush.flush();
+                            if unmapped_frame == frame.start_address()
+                                && mapper.translate(page.start_address()).is_none()
+                            {
+                                serial::write_str("X11-OS: page unmapping verified\r\n");
+                            } else {
+                                serial::write_str("X11-OS: page unmapping verification failed\r\n");
+                            }
+                        }
+                        Err(_) => serial::write_str("X11-OS: page unmapping failed\r\n"),
+                    }
+                }
+                Err(_) => serial::write_str("X11-OS: page mapping failed\r\n"),
+            }
+        } else {
+            serial::write_str("X11-OS: page mapping test skipped, page already mapped\r\n");
+        }
+    } else {
+        serial::write_str("X11-OS: page-table integration test skipped\r\n");
     }
 
     serial::write_str("X11-OS: entering idle state\r\n");
