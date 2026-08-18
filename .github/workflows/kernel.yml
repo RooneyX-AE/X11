@@ -30,16 +30,23 @@ jobs:
           echo '--- compiler error summary ---'
           grep -E '^error([[]E[0-9]+[]])?:|^ *--> ' cargo-check.log | head -n 240 || true
           echo '--- end compiler error summary ---'
-          awk '
-            /^error([[]E[0-9]+[]])?:/ { msg=$0; next }
-            /^ *--> / {
-              line=$0
-              sub(/^ *--> /, "", line)
-              if (match(line, /^([^:]+):([0-9]+):([0-9]+)/, m)) {
-                printf "::error file=%s,line=%s,col=%s::%s\n", m[1], m[2], m[3], msg
-              }
-            }
-          ' cargo-check.log | head -n 100
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          current = None
+          count = 0
+          for line in Path("cargo-check.log").read_text(errors="replace").splitlines():
+              if re.match(r"^error(?:\[E\d+\])?:", line):
+                  current = line.strip()
+                  continue
+              match = re.match(r"^\s*-->\s+([^:]+):(\d+):(\d+)", line)
+              if match and current and count < 100:
+                  path, row, col = match.groups()
+                  safe = current.replace("\r", "").replace("\n", " ")
+                  print(f"::error file={path},line={row},col={col}::{safe}")
+                  count += 1
+          PY
           exit "$check_status"
       - name: Build UEFI image
         run: cargo build -p x11-os-boot
