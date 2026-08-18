@@ -4,7 +4,7 @@
 //! userspace code consume stable contracts instead of selector/table layout.
 
 use spin::Once;
-use x86_64::instructions::segmentation::{CS, Segment};
+use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
 use x86_64::instructions::tables::load_tss;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
@@ -21,6 +21,7 @@ static TSS: Once<TaskStateSegment> = Once::new();
 struct GdtState {
     table: GlobalDescriptorTable,
     kernel_code: SegmentSelector,
+    kernel_data: SegmentSelector,
     tss_selector: SegmentSelector,
 }
 
@@ -38,10 +39,12 @@ pub fn init() {
     let state = GDT.call_once(|| {
         let mut table = GlobalDescriptorTable::new();
         let kernel_code = table.append(Descriptor::kernel_code_segment());
+        let kernel_data = table.append(Descriptor::kernel_data_segment());
         let tss_selector = table.append(Descriptor::tss_segment(tss));
         GdtState {
             table,
             kernel_code,
+            kernel_data,
             tss_selector,
         }
     });
@@ -50,8 +53,13 @@ pub fn init() {
 
     // SAFETY: selectors reference descriptors stored in the permanently
     // initialized GDT and TSS above. Both live for the kernel lifetime.
+    // Reloading the data segments prevents stale selectors from referring to
+    // descriptor entries in the pre-GDT firmware/bootloader table.
     unsafe {
         CS::set_reg(state.kernel_code);
+        DS::set_reg(state.kernel_data);
+        ES::set_reg(state.kernel_data);
+        SS::set_reg(state.kernel_data);
         load_tss(state.tss_selector);
     }
 }
