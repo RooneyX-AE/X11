@@ -91,7 +91,7 @@ impl InterruptedState {
 
     pub const fn is_valid(self) -> bool {
         self.return_state.rip() != 0
-            && self.return_state.resume_rsp() != 0
+            && self.return_state.resume_rsp() >= 24
             && self.return_state.rflags() & 2 != 0
             && (self.return_state.is_kernel()
                 || (self.return_state.rsp().is_some() && self.return_state.ss().is_some()))
@@ -117,6 +117,23 @@ mod tests {
         assert_eq!(snapshot.return_state().rsp(), None);
         assert_eq!(snapshot.return_state().ss(), None);
         assert!(snapshot.kernel_preempt_state().is_some());
+    }
+
+    #[test]
+    fn resume_stack_must_fit_iret_frame() {
+        let state = ReturnState {
+            rip: 0x1000,
+            cs: 0x10,
+            rflags: 0x202,
+            resume_rsp: 16,
+            rsp: None,
+            ss: None,
+        };
+        assert!(!InterruptedState {
+            registers: SavedRegisters::default(),
+            return_state: state,
+        }
+        .is_valid());
     }
 
     #[test]
