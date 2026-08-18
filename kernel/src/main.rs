@@ -36,6 +36,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
 
+    match arch::x86_64::tsc::TscClocksource::try_new() {
+        Ok(clock) => {
+            serial::write_str("X11-OS: invariant TSC clocksource available\r\n");
+            serial::write_str("X11-OS: TSC frequency Hz = ");
+            serial::write_usize(clock.frequency().hz() as usize);
+            serial::write_str("\r\n");
+            if let Ok(now) = clock.now() {
+                serial::write_str("X11-OS: TSC timebase initialized at ns = ");
+                serial::write_usize(now.as_nanos() as usize);
+                serial::write_str("\r\n");
+            }
+        }
+        Err(_) => serial::write_str("X11-OS: invariant TSC clocksource unavailable\r\n"),
+    }
+
     let apic = arch::x86_64::apic::ApicCapabilities::detect();
     serial::write_str("X11-OS: local APIC = ");
     serial::write_str(if apic.apic { "supported\r\n" } else { "unsupported\r\n" });
