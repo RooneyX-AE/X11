@@ -9,6 +9,7 @@ pub mod execution;
 pub mod execution_registry;
 pub mod interrupt_entry;
 pub mod interrupt_frame;
+pub mod interrupted_state;
 pub mod ioapic;
 pub mod irq_routing;
 pub mod kernel_task;
