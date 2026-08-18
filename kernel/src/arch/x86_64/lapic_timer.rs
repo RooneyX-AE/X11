@@ -1,12 +1,12 @@
 //! Local APIC timer backend for xAPIC and x2APIC.
 //!
-//! The timer frequency is calibrated empirically against the invariant TSC so
-//! the backend does not assume a particular processor bus or crystal clock.
-//! Calibration is performed while the timer interrupt remains masked.
+//! Periodic mode is calibrated empirically against the invariant TSC. One-shot
+//! deadline mode uses the architectural IA32_TSC_DEADLINE MSR when CPUID
+//! advertises support, avoiding assumptions about the LAPIC bus clock.
 
 use crate::interrupts::TIMER_VECTOR;
 use crate::memory::PhysicalMemoryMapping;
-use crate::timer::{TimerDevice, TimerInterval};
+use crate::timer::{Clocksource, MonotonicTime, TimerDeadline, TimerDevice, TimerInterval};
 use x86_64::registers::model_specific::Msr;
 
 use super::apic::ApicMode;
@@ -22,6 +22,10 @@ const X2APIC_INIT_COUNT: u32 = 0x838;
 const X2APIC_CURRENT_COUNT: u32 = 0x839;
 const X2APIC_DIVIDE_CONFIG: u32 = 0x83E;
 
+const IA32_TSC_DEADLINE: u32 = 0x6E0;
+const CPUID_TSC_DEADLINE: u32 = 0x1;
+const TSC_DEADLINE_BIT: u32 = 1 << 24;
+
 const LVT_MASKED: u32 = 1 << 16;
 const LVT_PERIODIC: u32 = 1 << 17;
 const MAX_INITIAL_COUNT: u32 = u32::MAX;
@@ -31,11 +35,13 @@ const CALIBRATION_TSC_NANOS: u64 = 10_000_000;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LapicTimerError {
     UnsupportedMode,
+    UnsupportedTscDeadline,
     InvalidMapping,
     CalibrationFailed,
     FrequencyOverflow,
     NotCalibrated,
     IntervalTooLarge,
+    DeadlineOverflow,
 }
 
 /// Local APIC timer frequency in timer ticks per second after the selected divisor.
@@ -55,10 +61,14 @@ pub struct LapicTimer {
     mode: ApicMode,
     mmio_base: Option<u64>,
     frequency: Option<LapicTimerFrequency>,
+    tsc_deadline_supported: bool,
+    tsc_start_ticks: Option<u64>,
+    tsc_frequency_hz: Option<u64>,
     lvt_timer: Option<Msr>,
     init_count: Option<Msr>,
     current_count: Option<Msr>,
     divide_config: Option<Msr>,
+    tsc_deadline: Msr,
 }
 
 impl LapicTimer {
@@ -73,6 +83,7 @@ impl LapicTimer {
         mode: ApicMode,
         mapping: Option<PhysicalMemoryMapping>,
     ) -> Result<Self, LapicTimerError> {
+        let tsc_deadline_supported = tsc_deadline_supported();
         match mode {
             ApicMode::XApic => {
                 let Some(mapping) = mapping else {
@@ -87,20 +98,28 @@ impl LapicTimer {
                     mode,
                     mmio_base: Some(mapped),
                     frequency: None,
+                    tsc_deadline_supported,
+                    tsc_start_ticks: None,
+                    tsc_frequency_hz: None,
                     lvt_timer: None,
                     init_count: None,
                     current_count: None,
                     divide_config: None,
+                    tsc_deadline: Msr::new(IA32_TSC_DEADLINE),
                 })
             }
             ApicMode::X2Apic => Ok(Self {
                 mode,
                 mmio_base: None,
                 frequency: None,
+                tsc_deadline_supported,
+                tsc_start_ticks: None,
+                tsc_frequency_hz: None,
                 lvt_timer: Some(Msr::new(X2APIC_LVT_TIMER)),
                 init_count: Some(Msr::new(X2APIC_INIT_COUNT)),
                 current_count: Some(Msr::new(X2APIC_CURRENT_COUNT)),
                 divide_config: Some(Msr::new(X2APIC_DIVIDE_CONFIG)),
+                tsc_deadline: Msr::new(IA32_TSC_DEADLINE),
             }),
         }
     }
@@ -109,7 +128,7 @@ impl LapicTimer {
         self.frequency
     }
 
-    /// Calibrates the LAPIC timer against an invariant TSC.
+    /// Calibrates periodic mode against an invariant TSC.
     ///
     /// The timer interrupt stays masked during calibration.
     pub fn calibrate(
@@ -156,6 +175,8 @@ impl LapicTimer {
 
         let frequency = LapicTimerFrequency { hz: frequency_hz };
         self.frequency = Some(frequency);
+        self.tsc_start_ticks = Some(start);
+        self.tsc_frequency_hz = Some(tsc_hz);
         unsafe {
             self.write_initial(0)?;
             self.write_lvt((TIMER_VECTOR as u32) | LVT_MASKED)?;
@@ -229,6 +250,28 @@ impl LapicTimer {
             }
         }
     }
+
+    fn deadline_to_tsc(&self, deadline: MonotonicTime) -> Result<u64, LapicTimerError> {
+        let start = self.tsc_start_ticks.ok_or(LapicTimerError::NotCalibrated)?;
+        let frequency = self.tsc_frequency_hz.ok_or(LapicTimerError::NotCalibrated)?;
+        let nanos = deadline.as_nanos();
+        let delta = (nanos as u128)
+            .checked_mul(frequency as u128)
+            .and_then(|value| value.checked_div(1_000_000_000u128))
+            .ok_or(LapicTimerError::DeadlineOverflow)?;
+        let deadline = (start as u128)
+            .checked_add(delta)
+            .ok_or(LapicTimerError::DeadlineOverflow)?;
+        u64::try_from(deadline).map_err(|_| LapicTimerError::DeadlineOverflow)
+    }
+}
+
+fn tsc_deadline_supported() -> bool {
+    let leaf = unsafe {
+        // SAFETY: CPUID leaf 1 is architectural on x86_64.
+        core::arch::x86_64::__cpuid(CPUID_TSC_DEADLINE)
+    };
+    leaf.ecx & TSC_DEADLINE_BIT != 0
 }
 
 impl TimerDevice for LapicTimer {
@@ -255,8 +298,25 @@ impl TimerDevice for LapicTimer {
         Ok(())
     }
 
+    fn set_deadline(&mut self, deadline: TimerDeadline) -> Result<(), Self::Error> {
+        if !self.tsc_deadline_supported {
+            return Err(LapicTimerError::UnsupportedTscDeadline);
+        }
+        let tsc_deadline = self.deadline_to_tsc(deadline.time())?;
+
+        unsafe {
+            self.write_initial(0)?;
+            self.write_lvt(TIMER_VECTOR as u32)?;
+            // SAFETY: IA32_TSC_DEADLINE is the architectural TSC target MSR
+            // for the local APIC timer.
+            self.tsc_deadline.write(tsc_deadline);
+        }
+        Ok(())
+    }
+
     fn disable(&mut self) -> Result<(), Self::Error> {
         unsafe {
+            self.tsc_deadline.write(0);
             self.write_initial(0)?;
             self.write_lvt((TIMER_VECTOR as u32) | LVT_MASKED)?;
         }
@@ -266,10 +326,15 @@ impl TimerDevice for LapicTimer {
 
 #[cfg(test)]
 mod tests {
-    use super::DIVIDE_BY_16_ENCODING;
+    use super::{DIVIDE_BY_16_ENCODING, tsc_deadline_supported};
 
     #[test]
     fn divide_encoding_is_sixteen() {
         assert_eq!(DIVIDE_BY_16_ENCODING, 0b0011);
+    }
+
+    #[test]
+    fn deadline_feature_is_a_runtime_cpu_property() {
+        let _ = tsc_deadline_supported();
     }
 }
