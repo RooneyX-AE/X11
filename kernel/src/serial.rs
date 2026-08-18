@@ -1,5 +1,4 @@
 use core::arch::asm;
-use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const COM1: u16 = 0x3F8;
@@ -40,30 +39,46 @@ pub fn write_str(message: &str) {
     }
 }
 
-pub fn _print(args: fmt::Arguments<'_>) {
-    struct SerialWriter;
+pub fn write_usize(mut value: usize) {
+    let mut digits = [0u8; 20];
+    let mut index = digits.len();
 
-    impl fmt::Write for SerialWriter {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            super::serial::write_str(s);
-            Ok(())
-        }
+    if value == 0 {
+        write_byte(b'0');
+        return;
     }
 
-    let mut writer = SerialWriter;
-    let _ = writer.write_fmt(args);
+    while value != 0 {
+        index -= 1;
+        digits[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+
+    for byte in &digits[index..] {
+        write_byte(*byte);
+    }
 }
 
 unsafe fn outb(port: u16, value: u8) {
     unsafe {
-        asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
+        asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+            options(nomem, nostack, preserves_flags)
+        );
     }
 }
 
 unsafe fn inb(port: u16) -> u8 {
     let value: u8;
     unsafe {
-        asm!("in al, dx", out("al") value, in("dx") port, options(nomem, nostack, preserves_flags));
+        asm!(
+            "in al, dx",
+            out("al") value,
+            in("dx") port,
+            options(nomem, nostack, preserves_flags)
+        );
     }
     value
 }
