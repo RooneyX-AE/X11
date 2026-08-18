@@ -74,7 +74,9 @@ impl KernelRuntime {
     }
 
     pub fn service_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
-        Ok(self.manager.expire_sleepers(now))
+        let woken = self.manager.expire_sleepers(now);
+        self.request_reschedule();
+        Ok(woken)
     }
 
     pub fn service_pending_timer(&mut self, now: u64) -> Result<usize, RuntimeError> {
@@ -112,7 +114,7 @@ impl Drop for PreemptionDisableGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::{KernelRuntime, RuntimeError};
-    use crate::scheduler::Priority;
+    use crate::scheduler::{Priority, TaskState};
 
     extern "C" fn never_returns() -> ! { loop {} }
 
@@ -128,5 +130,15 @@ mod tests {
         assert!(runtime.is_reschedule_pending());
         let _ = runtime.spawn(Priority::DEFAULT, never_returns);
         assert!(runtime.is_reschedule_pending());
+    }
+
+    #[test]
+    fn timer_service_requests_reschedule_after_each_tick() {
+        let mut runtime = KernelRuntime::new();
+        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
+        assert!(!runtime.is_reschedule_pending());
+        assert_eq!(runtime.service_timer(100).unwrap(), 0);
+        assert!(runtime.is_reschedule_pending());
+        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Ready));
     }
 }
