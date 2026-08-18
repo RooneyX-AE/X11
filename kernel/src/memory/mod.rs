@@ -14,6 +14,7 @@ mod physical;
 mod region;
 mod user;
 mod user_copy;
+mod user_stack;
 
 pub use address_space::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
 pub use boot::MemorySummary;
@@ -23,6 +24,10 @@ pub use page_table::{MappingError, MappingFlush, PageAccess, PageTableMapper};
 pub use physical::PhysicalMemoryMapping;
 pub use user::{validate_slice, UserRangeError};
 pub use user_copy::{copy_from_user, validate_readable_range, UserCopyBackend, UserReadError};
+pub use user_stack::{
+    is_valid_user_stack_pointer, user_stack_guard_range, user_stack_range, USER_STACK_GUARD_SIZE,
+    USER_STACK_PAGES, USER_STACK_SIZE, USER_STACK_TOP,
+};
 
 /// Produces a kernel-owned summary of the bootloader memory map.
 pub fn summarize_boot_map(regions: &bootloader_api::info::MemoryRegions) -> MemorySummary {
