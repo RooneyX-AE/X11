@@ -25,11 +25,11 @@ impl MappingFlush for X86Flush {
     }
 }
 
-struct FrameAllocatorAdapter<'a> {
-    inner: &'a mut EarlyFrameAllocator<'a>,
+struct FrameAllocatorAdapter<'allocator, 'regions> {
+    inner: &'allocator mut EarlyFrameAllocator<'regions>,
 }
 
-impl X86FrameAllocator<Size4KiB> for FrameAllocatorAdapter<'_> {
+impl X86FrameAllocator<Size4KiB> for FrameAllocatorAdapter<'_, '_> {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         self.inner.allocate_frame().and_then(|frame| {
             PhysFrame::from_start_address(PhysAddr::new(frame.start_address())).ok()
@@ -38,13 +38,13 @@ impl X86FrameAllocator<Size4KiB> for FrameAllocatorAdapter<'_> {
 }
 
 /// Page-table adapter backed by the active x86_64 page table.
-pub struct X86PageTableMapper<'a> {
+pub struct X86PageTableMapper<'allocator, 'regions> {
     inner: x86_64::structures::paging::OffsetPageTable<'static>,
-    frame_allocator: FrameAllocatorAdapter<'a>,
+    frame_allocator: FrameAllocatorAdapter<'allocator, 'regions>,
     address_space: VirtRange,
 }
 
-impl<'a> X86PageTableMapper<'a> {
+impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
     /// # Safety
     ///
     /// `physical_memory_offset` must be the bootloader-provided direct-map
@@ -52,7 +52,7 @@ impl<'a> X86PageTableMapper<'a> {
     /// mapper for the lifetime of the returned value.
     pub unsafe fn new(
         physical_memory_offset: u64,
-        frame_allocator: &'a mut EarlyFrameAllocator<'a>,
+        frame_allocator: &'allocator mut EarlyFrameAllocator<'regions>,
         address_space: VirtRange,
     ) -> Self {
         // SAFETY: The caller provides the bootloader-established direct map and
@@ -66,7 +66,7 @@ impl<'a> X86PageTableMapper<'a> {
     }
 }
 
-impl PageTableMapper for X86PageTableMapper<'_> {
+impl PageTableMapper for X86PageTableMapper<'_, '_> {
     type Flush = X86Flush;
 
     fn map_page(
