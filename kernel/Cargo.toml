@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 bootloader_api = "0.11.17"
 x86_64 = "0.15.5"
+spin = { version = "0.12.2", default-features = false, features = ["once"] }
