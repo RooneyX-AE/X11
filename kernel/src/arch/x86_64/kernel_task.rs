@@ -4,14 +4,34 @@
 //! generic task first, binds an execution handle, installs the concrete x86
 //! execution state, and only then exposes the task to the ready queue.
 
-use crate::scheduler::{Priority, Scheduler, SchedulerError, TaskId};
+use crate::scheduler::{DispatchDecision, Priority, Scheduler, SchedulerError, TaskId};
 
+use super::dispatch::{self, DispatchError};
 use super::execution_registry::{ExecutionRegistry, RegistryInsertError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum KernelTaskError {
     Scheduler(SchedulerError),
     Registry(RegistryInsertError),
+    Dispatch(DispatchError),
+}
+
+impl From<SchedulerError> for KernelTaskError {
+    fn from(error: SchedulerError) -> Self {
+        Self::Scheduler(error)
+    }
+}
+
+impl From<RegistryInsertError> for KernelTaskError {
+    fn from(error: RegistryInsertError) -> Self {
+        Self::Registry(error)
+    }
+}
+
+impl From<DispatchError> for KernelTaskError {
+    fn from(error: DispatchError) -> Self {
+        Self::Dispatch(error)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -58,6 +78,18 @@ impl KernelTaskManager {
         Ok(task_id)
     }
 
+    /// Select the next task and validate that its concrete execution state is
+    /// present before any architecture-specific switch is attempted.
+    pub fn prepare_dispatch(&mut self) -> Result<DispatchDecision, KernelTaskError> {
+        let decision = self.scheduler.schedule_next();
+        let Some(next) = decision.next else {
+            return Ok(decision);
+        };
+
+        dispatch::validate_transition(&self.executions, decision.previous, next)?;
+        Ok(decision)
+    }
+
     pub fn is_executable(&self, task_id: TaskId) -> bool {
         let Some(handle) = self.scheduler.execution(task_id) else {
             return false;
@@ -86,6 +118,16 @@ mod tests {
         assert!(manager.is_executable(task));
         assert_eq!(manager.scheduler.state(task), Some(TaskState::Ready));
         assert_eq!(manager.task_count(), 1);
+    }
+
+    #[test]
+    fn prepare_dispatch_validates_registry_backed_execution() {
+        let mut manager = KernelTaskManager::new();
+        let task = manager.spawn(Priority::DEFAULT, never_returns).unwrap();
+        let decision = manager.prepare_dispatch().unwrap();
+        assert_eq!(decision.previous, None);
+        assert_eq!(decision.next, Some(task));
+        assert_eq!(manager.scheduler.state(task), Some(TaskState::Running));
     }
 
     #[test]
