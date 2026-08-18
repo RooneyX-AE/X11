@@ -50,10 +50,19 @@ const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 #[inline(never)]
 extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mut u64, resume_rsp: u64) {
     let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
-    let _capture = unsafe {
+    let capture_result = unsafe {
         crate::arch::x86_64::cpu_local::local().capture_interrupted(registers, frame, resume_rsp)
     };
     crate::arch::x86_64::idt::record_timer_interrupt();
+
+    // Never switch away from the interrupted task unless its CPU state was
+    // successfully captured. A failed capture can mean there is no current
+    // task, a snapshot is already pending, or the frame is invalid; in all
+    // cases returning through the original iret path is safer than losing the
+    // current execution state.
+    if capture_result.is_err() {
+        return;
+    }
 
     let Some(runtime_ptr) = crate::arch::x86_64::cpu_local::local().runtime_ptr() else { return; };
     let outcome = unsafe {
