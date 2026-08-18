@@ -4,13 +4,16 @@
 //! types. Higher-level code receives the kernel-owned mapping contract and an
 //! explicit TLB flush token.
 
-use x86_64::structures::paging::{mapper::MapperFlush, FrameAllocator as X86FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{
+    mapper::MapperFlush, FrameAllocator as X86FrameAllocator, Mapper, Page, PageTableFlags,
+    PhysFrame, Size4KiB,
+};
 use x86_64::PhysAddr;
 
+use super::address_space::VirtRange;
 use super::frame::{EarlyFrameAllocator, FrameAllocator as X11FrameAllocator};
 use super::page::Page4K;
 use super::page_table::{MappingError, MappingFlush, PageTableMapper};
-use super::virtual::VirtRange;
 use crate::arch::x86_64::paging;
 
 /// TLB flush token produced by an x86_64 mapping operation.
