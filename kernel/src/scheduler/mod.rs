@@ -6,6 +6,7 @@
 
 mod execution;
 mod run_queue;
+mod sleep_queue;
 mod task;
 mod wait_queue;
 
@@ -14,6 +15,7 @@ use alloc::vec::Vec;
 
 pub use execution::{ExecutionBinding, ExecutionHandle, ExecutionState};
 pub use run_queue::RunQueue;
+pub use sleep_queue::{SleepEntry, SleepQueue};
 pub use task::{ExecutionAttachError, Priority, TaskControlBlock, TaskId, TaskState};
 pub use wait_queue::{WaitQueue, WaitQueueError};
 
@@ -29,6 +31,7 @@ pub enum SchedulerError {
     ExecutionAlreadyAttached,
     TaskNotCreated,
     WaitQueueAlreadyContainsTask,
+    SleepQueueAlreadyContainsTask,
 }
 
 #[derive(Debug, Default)]
@@ -164,6 +167,43 @@ impl Scheduler {
         None
     }
 
+    /// Put the current task to sleep until `deadline` on a monotonic scheduler clock.
+    /// The timer backend is responsible only for advancing the clock and calling
+    /// `expire_sleepers`; it does not own task state transitions.
+    pub fn sleep_current_until(&mut self, deadline: u64, sleepers: &mut SleepQueue) -> Result<TaskId, SchedulerError> {
+        let id = self.current.ok_or(SchedulerError::TaskNotFound)?;
+        if sleepers.contains(id) { return Err(SchedulerError::SleepQueueAlreadyContainsTask); }
+        let transitioned = {
+            let Some(task) = self.task_mut(id) else { return Err(SchedulerError::TaskNotFound); };
+            task.transition(TaskState::Blocked)
+        };
+        if !transitioned { return Err(SchedulerError::TaskNotFound); }
+        if !sleepers.insert(SleepEntry::new(deadline, id)) {
+            if let Some(task) = self.task_mut(id) { let _ = task.transition(TaskState::Running); }
+            return Err(SchedulerError::SleepQueueAlreadyContainsTask);
+        }
+        self.current = None;
+        Ok(id)
+    }
+
+    /// Expire all sleepers through `now` and return tasks that became Ready.
+    /// This is deliberately separate from the hardware timer interrupt path.
+    pub fn expire_sleepers(&mut self, now: u64, sleepers: &mut SleepQueue) -> Vec<TaskId> {
+        let expired = sleepers.expire_until(now);
+        let mut woken = Vec::with_capacity(expired.len());
+        for id in expired {
+            let transitioned = {
+                let Some(task) = self.task_mut(id) else { continue; };
+                if task.state() != TaskState::Blocked { continue; }
+                task.transition(TaskState::Ready)
+            };
+            if transitioned && self.ready.push(id) {
+                woken.push(id);
+            }
+        }
+        woken
+    }
+
     pub fn exit_current(&mut self) -> bool {
         let Some(id) = self.current else { return false; };
         let index = id.index() as usize;
@@ -196,7 +236,7 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::{Priority, Scheduler, SchedulerError, TaskState, WaitQueue};
+    use super::{Priority, Scheduler, SchedulerError, SleepQueue, TaskState, WaitQueue};
 
     #[test]
     fn scheduler_dispatches_ready_tasks_fifo() {
@@ -240,6 +280,23 @@ mod tests {
         assert_eq!(scheduler.state(task), Some(TaskState::Blocked));
         assert_eq!(scheduler.current(), None);
         assert_eq!(scheduler.wake_one(&mut waiters), Some(task));
+        assert_eq!(scheduler.state(task), Some(TaskState::Ready));
+        assert_eq!(scheduler.ready_len(), 1);
+    }
+
+    #[test]
+    fn sleep_and_expire_preserve_lifecycle_invariants() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        let mut sleepers = SleepQueue::new();
+        assert!(scheduler.make_ready(task));
+        assert_eq!(scheduler.schedule_next().next, Some(task));
+        assert_eq!(scheduler.sleep_current_until(100, &mut sleepers), Ok(task));
+        assert_eq!(scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(sleepers.next_deadline(), Some(100));
+        assert!(scheduler.expire_sleepers(99, &mut sleepers).is_empty());
+        assert_eq!(scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(scheduler.expire_sleepers(100, &mut sleepers), alloc::vec![task]);
         assert_eq!(scheduler.state(task), Some(TaskState::Ready));
         assert_eq!(scheduler.ready_len(), 1);
     }
