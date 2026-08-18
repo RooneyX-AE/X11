@@ -36,20 +36,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
 
-    match arch::x86_64::tsc::TscClocksource::try_new() {
+    let tsc_clock = match arch::x86_64::tsc::TscClocksource::try_new() {
         Ok(clock) => {
             serial::write_str("X11-OS: invariant TSC clocksource available\r\n");
             serial::write_str("X11-OS: TSC frequency Hz = ");
             serial::write_usize(clock.frequency().hz() as usize);
             serial::write_str("\r\n");
-            if let Ok(now) = clock.now() {
+            if let Ok(now) = timer::Clocksource::now(&clock) {
                 serial::write_str("X11-OS: TSC timebase initialized at ns = ");
                 serial::write_usize(now.as_nanos() as usize);
                 serial::write_str("\r\n");
             }
+            Some(clock)
         }
-        Err(_) => serial::write_str("X11-OS: invariant TSC clocksource unavailable\r\n"),
-    }
+        Err(_) => {
+            serial::write_str("X11-OS: invariant TSC clocksource unavailable\r\n");
+            None
+        }
+    };
 
     let apic = arch::x86_64::apic::ApicCapabilities::detect();
     serial::write_str("X11-OS: local APIC = ");
@@ -136,6 +140,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     if apic_ready {
+        if let (Some(mapping), Some(tsc)) = (physical_mapping, tsc_clock.as_ref()) {
+            // SAFETY: The APIC mode was enabled above and the direct map is the
+            // bootloader-provided physical-memory mapping.
+            match unsafe {
+                arch::x86_64::lapic_timer::LapicTimer::new(
+                    apic.preferred_mode().expect("APIC mode was marked ready"),
+                    Some(mapping),
+                )
+            } {
+                Ok(mut timer_device) => match timer_device.calibrate(tsc) {
+                    Ok(frequency) => {
+                        serial::write_str("X11-OS: LAPIC timer calibrated Hz = ");
+                        serial::write_usize(frequency.hz() as usize);
+                        serial::write_str("\r\n");
+                    }
+                    Err(_) => serial::write_str("X11-OS: LAPIC timer calibration failed\r\n"),
+                },
+                Err(_) => serial::write_str("X11-OS: LAPIC timer backend unavailable\r\n"),
+            }
+        } else {
+            serial::write_str("X11-OS: LAPIC timer calibration skipped\r\n");
+        }
         serial::write_str("X11-OS: APIC platform initialization ready\r\n");
     }
 
