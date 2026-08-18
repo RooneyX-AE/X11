@@ -54,3 +54,7 @@ pub fn init() {
         load_tss(state.tss_selector);
     }
 }
+
+pub fn kernel_code_selector() -> Option<u16> {
+    GDT.get().map(|state| state.kernel_code.0)
+}
