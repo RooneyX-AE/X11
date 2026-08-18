@@ -17,7 +17,7 @@ pub mod preemption;
 pub mod runtime;
 pub mod tsc;
 pub mod voluntary_switch;
-pub mod yield;
+pub mod yield_switch;
 mod gdt;
 mod idt;
 pub mod page_table;
