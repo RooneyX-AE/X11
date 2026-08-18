@@ -89,32 +89,20 @@ fn read_ticks() -> u64 {
 }
 
 fn invariant_tsc_supported() -> bool {
-    let max_extended = unsafe {
-        // SAFETY: CPUID is architectural on x86_64.
-        __cpuid(CPUID_EXTENDED_MAX).eax
-    };
+    let max_extended = __cpuid(CPUID_EXTENDED_MAX).eax;
     if max_extended < CPUID_EXTENDED_FEATURES {
         return false;
     }
 
-    let features = unsafe {
-        // SAFETY: CPUID leaf is available after the max-leaf check above.
-        __cpuid(CPUID_EXTENDED_FEATURES)
-    };
+    let features = __cpuid(CPUID_EXTENDED_FEATURES);
     features.edx & INVARIANT_TSC_BIT != 0
 }
 
 fn detect_frequency() -> Result<TscFrequency, TscError> {
-    let max_basic = unsafe {
-        // SAFETY: CPUID is architectural on x86_64.
-        __cpuid(0).eax
-    };
+    let max_basic = __cpuid(0).eax;
 
     if max_basic >= CPUID_TSC_RATIO {
-        let ratio = unsafe {
-            // SAFETY: CPUID.15H is available after the max-basic-leaf check.
-            __cpuid_count(CPUID_TSC_RATIO, 0)
-        };
+        let ratio = __cpuid_count(CPUID_TSC_RATIO, 0);
         let denominator = ratio.eax;
         let numerator = ratio.ebx;
         let crystal_hz = ratio.ecx as u64;
@@ -134,10 +122,7 @@ fn detect_frequency() -> Result<TscFrequency, TscError> {
     }
 
     if max_basic >= CPUID_PROCESSOR_FREQ {
-        let frequency = unsafe {
-            // SAFETY: CPUID.16H is available after the max-basic-leaf check.
-            __cpuid_count(CPUID_PROCESSOR_FREQ, 0)
-        };
+        let frequency = __cpuid_count(CPUID_PROCESSOR_FREQ, 0);
         let mhz = frequency.eax;
         if mhz != 0 {
             return Ok(TscFrequency {
