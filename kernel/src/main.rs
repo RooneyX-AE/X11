@@ -65,6 +65,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     }
 
+    let mut apic_ready = false;
     if let (Some(mapping), Some(rsdp_address)) = (
         physical_mapping,
         Option::<u64>::from(boot_info.rsdp_addr),
@@ -86,6 +87,30 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 serial::write_str("X11-OS: interrupt source overrides = ");
                 serial::write_usize(topology.source_override_count);
                 serial::write_str("\r\n");
+
+                if topology.io_apic_count > 0 {
+                    arch::x86_64::pic::mask_all();
+                    serial::write_str("X11-OS: legacy 8259 masked\r\n");
+
+                    if let Some(mode) = apic.preferred_mode() {
+                        // SAFETY: CPU interrupt delivery is not enabled yet,
+                        // and the capability snapshot came directly from CPUID.
+                        if let Some(mode) = unsafe {
+                            arch::x86_64::apic::enable_preferred_mode(apic)
+                        } {
+                            serial::write_str("X11-OS: local APIC mode = ");
+                            serial::write_str(match mode {
+                                arch::x86_64::apic::ApicMode::XApic => "xAPIC\r\n",
+                                arch::x86_64::apic::ApicMode::X2Apic => "x2APIC\r\n",
+                            });
+                            apic_ready = true;
+                        }
+                    } else {
+                        serial::write_str("X11-OS: no usable local APIC mode\r\n");
+                    }
+                } else {
+                    serial::write_str("X11-OS: no I/O APIC present, IRQ routing remains disabled\r\n");
+                }
             }
             Err(_) => {
                 serial::write_str("X11-OS: ACPI MADT discovery failed\r\n");
@@ -93,6 +118,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     } else {
         serial::write_str("X11-OS: ACPI RSDP unavailable\r\n");
+    }
+
+    if apic_ready {
+        serial::write_str("X11-OS: APIC platform initialization ready\r\n");
     }
 
     let mut frame_allocator = memory::EarlyFrameAllocator::new(&boot_info.memory_regions);
