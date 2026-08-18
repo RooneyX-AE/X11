@@ -1,5 +1,6 @@
-//! x86_64-specific CPU initialization.
+//! x86_64-specific CPU and platform initialization.
 
+pub mod acpi;
 pub mod apic;
 mod gdt;
 mod idt;
