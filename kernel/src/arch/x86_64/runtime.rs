@@ -108,6 +108,10 @@ impl KernelRuntime {
     /// The scheduler is mutated only after the target return path has been
     /// classified, preventing a task from being marked Running while the CPU
     /// is still executing the interrupted task.
+    ///
+    /// A successful direct transfer consumes the reschedule edge here. If the
+    /// CPU cannot switch yet, the request remains pending for a later safe
+    /// return boundary.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
         // The interrupt path owns the current timer event. Consuming the
         // pending flag here prevents service_pending_timer() from processing
@@ -115,26 +119,52 @@ impl KernelRuntime {
         let _ = super::idt::take_timer_pending();
 
         self.commit_interrupted_state()?;
-        self.request_reschedule();
 
-        if !self.preemption.is_enabled() { return Ok(InterruptPreemption::ResumeCurrent); }
+        if !self.preemption.is_enabled() {
+            self.request_reschedule();
+            return Ok(InterruptPreemption::ResumeCurrent);
+        }
         let current = self.manager.scheduler.current();
-        let Some(candidate) = self.manager.scheduler.next_ready() else { return Ok(InterruptPreemption::ResumeCurrent); };
-        if Some(candidate) == current { return Ok(InterruptPreemption::ResumeCurrent); }
+        let Some(candidate) = self.manager.scheduler.next_ready() else {
+            return Ok(InterruptPreemption::ResumeCurrent);
+        };
+        if Some(candidate) == current {
+            return Ok(InterruptPreemption::ResumeCurrent);
+        }
         let plan = self.manager.executions.preemption_plan(candidate).ok_or(RuntimeError::MissingExecutionPair)?;
 
         match plan {
             PreemptionPlan::ReturnToContext { context, .. } => {
-                let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
-                if decision.next != Some(candidate) { return Err(RuntimeError::MissingExecutionPair); }
+                let decision = self.manager.prepare_dispatch().map_err(|error| {
+                    self.request_reschedule();
+                    RuntimeError::Task(error)
+                })?;
+                if decision.next != Some(candidate) {
+                    self.request_reschedule();
+                    return Err(RuntimeError::MissingExecutionPair);
+                }
                 unsafe { cpu_local::local().set_current_task(Some(candidate)); }
+                let _ = self.reschedule.take();
                 Ok(InterruptPreemption::ReturnToContext(context))
             }
             PreemptionPlan::IretKernel { .. } => {
-                let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
-                if decision.next != Some(candidate) { return Err(RuntimeError::MissingExecutionPair); }
-                let state = self.manager.executions.take_kernel_preempt_state(candidate).ok_or(RuntimeError::MissingExecutionPair)?;
+                let decision = self.manager.prepare_dispatch().map_err(|error| {
+                    self.request_reschedule();
+                    RuntimeError::Task(error)
+                })?;
+                if decision.next != Some(candidate) {
+                    self.request_reschedule();
+                    return Err(RuntimeError::MissingExecutionPair);
+                }
+                let state = match self.manager.executions.take_kernel_preempt_state(candidate) {
+                    Some(state) => state,
+                    None => {
+                        self.request_reschedule();
+                        return Err(RuntimeError::MissingExecutionPair);
+                    }
+                };
                 unsafe { cpu_local::local().set_current_task(Some(candidate)); }
+                let _ = self.reschedule.take();
                 Ok(InterruptPreemption::ReturnToKernel(state))
             }
         }
