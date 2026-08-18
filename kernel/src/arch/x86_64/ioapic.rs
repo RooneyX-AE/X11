@@ -79,8 +79,10 @@ impl IoApic {
     }
 
     pub unsafe fn read_register(&self, register: u8) -> Option<u32> {
-        let select = self.mapping.translate(self.physical_base + IOREGSEL)? as *mut u32;
-        let data = self.mapping.translate(self.physical_base + IOWIN)? as *const u32;
+        let select_address = self.physical_base.checked_add(IOREGSEL)?;
+        let data_address = self.physical_base.checked_add(IOWIN)?;
+        let select = self.mapping.translate(select_address)? as *mut u32;
+        let data = self.mapping.translate(data_address)? as *const u32;
 
         // SAFETY: The caller guarantees that the supplied physical base is the
         // I/O APIC MMIO region reported by ACPI. The direct mapping provides a
@@ -92,10 +94,16 @@ impl IoApic {
     }
 
     pub unsafe fn write_register(&self, register: u8, value: u32) -> bool {
-        let Some(select) = self.mapping.translate(self.physical_base + IOREGSEL) else {
+        let Some(select_address) = self.physical_base.checked_add(IOREGSEL) else {
             return false;
         };
-        let Some(data) = self.mapping.translate(self.physical_base + IOWIN) else {
+        let Some(data_address) = self.physical_base.checked_add(IOWIN) else {
+            return false;
+        };
+        let Some(select) = self.mapping.translate(select_address) else {
+            return false;
+        };
+        let Some(data) = self.mapping.translate(data_address) else {
             return false;
         };
 
@@ -108,17 +116,22 @@ impl IoApic {
     }
 
     pub unsafe fn write_redirection(&self, index: u8, entry: RedirectionEntry) -> bool {
-        let register = REDIRECTION_TABLE_BASE.wrapping_add(index.saturating_mul(2));
+        let Some(offset) = index.checked_mul(2) else {
+            return false;
+        };
+        let Some(register) = REDIRECTION_TABLE_BASE.checked_add(offset) else {
+            return false;
+        };
         let (low, high) = entry.encode();
-        unsafe {
-            self.write_register(register, low) && self.write_register(register + 1, high)
-        }
+        // SAFETY: Register addressing has been checked above and each write is
+        // validated by `write_register`.
+        unsafe { self.write_register(register, low) && self.write_register(register + 1, high) }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RedirectionEntry;
+    use super::{RedirectionEntry, REDIRECTION_TABLE_BASE};
 
     #[test]
     fn masked_fixed_entry_encoding() {
@@ -137,5 +150,10 @@ mod tests {
         let (low, _) = entry.encode();
         assert_eq!((low >> 13) & 1, 1);
         assert_eq!((low >> 15) & 1, 1);
+    }
+
+    #[test]
+    fn first_redirection_register_is_base() {
+        assert_eq!(REDIRECTION_TABLE_BASE, 0x10);
     }
 }
