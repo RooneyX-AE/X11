@@ -15,7 +15,6 @@ use super::execution::{ExecutionError, X86ExecutionBinding};
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RegistryInsertError {
     AlreadyBound,
-    HandleTaskMismatch,
     Allocation,
 }
 
