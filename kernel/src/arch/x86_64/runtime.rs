@@ -68,7 +68,6 @@ impl KernelRuntime {
         self.manager.spawn(priority, entry).map_err(RuntimeError::Task)
     }
 
-    /// Select and validate one runnable task without performing a CPU switch.
     pub fn prepare_run(&mut self) -> Result<TaskId, RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         decision.next.ok_or(RuntimeError::NoRunnableTask)
@@ -94,10 +93,6 @@ impl KernelRuntime {
                     .get(next)
                     .ok_or(RuntimeError::MissingExecutionPair)?
                     .context();
-
-                // SAFETY: `boot_context` is the live continuation owned by this
-                // runtime and `next_context` belongs to a validated execution
-                // binding whose stack lifetime is owned by the registry.
                 unsafe {
                     yield_switch::activate_first(
                         &mut self.boot_context as *mut Context,
@@ -111,9 +106,6 @@ impl KernelRuntime {
                     .executions
                     .context_pair_mut(previous, next)
                     .ok_or(RuntimeError::MissingExecutionPair)?;
-
-                // SAFETY: `context_pair_mut` guarantees distinct execution
-                // objects and the registry owns their backing stacks.
                 unsafe {
                     yield_switch::switch(current as *mut Context, next_context as *const Context)?;
                 }
@@ -131,6 +123,11 @@ impl KernelRuntime {
 #[cfg(test)]
 mod tests {
     use super::{KernelRuntime, RuntimeError};
+    use crate::scheduler::{Priority, TaskState};
+
+    extern "C" fn never_returns() -> ! {
+        loop {}
+    }
 
     #[test]
     fn boxed_runtime_has_stable_address() {
@@ -145,5 +142,17 @@ mod tests {
         let mut runtime = KernelRuntime::new();
         let result = unsafe { runtime.dispatch_once() };
         assert_eq!(result, Err(RuntimeError::NoRunnableTask));
+    }
+
+    #[test]
+    fn sole_current_task_does_not_self_switch() {
+        let mut runtime = KernelRuntime::new();
+        let task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
+        let result = unsafe { runtime.dispatch_once() };
+        assert!(result.is_ok());
+        assert_eq!(runtime.manager().scheduler.state(task), Some(TaskState::Running));
+        let result = unsafe { runtime.dispatch_once() };
+        assert_eq!(result, Err(RuntimeError::NoRunnableTask));
+        assert_eq!(runtime.manager().scheduler.current(), Some(task));
     }
 }
