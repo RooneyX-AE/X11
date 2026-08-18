@@ -21,3 +21,29 @@ jobs:
         run: cargo check -p x11-os-kernel --target x86_64-unknown-none
       - name: Build UEFI image
         run: cargo build -p x11-os-boot
+      - name: Install QEMU and UEFI firmware
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf
+      - name: Boot kernel and verify paging path
+        shell: bash
+        run: |
+          set -o pipefail
+          image="$(cargo run -q -p x11-os-boot | sed -n 's/^X11-OS UEFI image: //p')"
+          test -n "$image"
+          firmware="$(find /usr/share/OVMF -maxdepth 1 -type f -name 'OVMF_CODE*.fd' | head -n 1)"
+          test -n "$firmware"
+          set +e
+          timeout 12s qemu-system-x86_64 \
+            -bios "$firmware" \
+            -drive "format=raw,file=$image" \
+            -serial stdio \
+            -display none \
+            2>&1 | tee qemu.log
+          qemu_status=${PIPESTATUS[0]}
+          set -e
+          test "$qemu_status" -eq 124
+          grep -q 'X11-OS: kernel entry reached' qemu.log
+          grep -q 'X11-OS: CPU foundation initialized' qemu.log
+          grep -q 'X11-OS: page mapping verified' qemu.log
+          grep -q 'X11-OS: page unmapping verified' qemu.log
