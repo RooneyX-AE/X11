@@ -3,10 +3,14 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 mod arch;
+mod heap;
 mod memory;
 mod serial;
 
+use alloc::vec::Vec;
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::panic::PanicInfo;
@@ -111,6 +115,59 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     } else {
         serial::write_str("X11-OS: page-table integration test skipped\r\n");
+    }
+
+    if let Some(mapping) = physical_mapping {
+        if let Some(frames) = frame_allocator.allocate_contiguous(heap::INITIAL_HEAP_FRAMES) {
+            if let Some(physical_range) = frames.physical_range() {
+                if let Some(virtual_range) = mapping.translate_range(physical_range) {
+                    if let (Some(size), Some(region)) = (
+                        frames.byte_len(),
+                        heap::HeapRegion::new(virtual_range.start(), heap::INITIAL_HEAP_SIZE),
+                    ) {
+                        if size == heap::INITIAL_HEAP_SIZE && virtual_range.len() == size as u64 {
+                            match heap::GLOBAL.init(region) {
+                                Ok(()) => {
+                                    serial::write_str("X11-OS: heap initialized\r\n");
+
+                                    let mut probe = Vec::with_capacity(64);
+                                    for value in 0..64u64 {
+                                        probe.push(value * 3);
+                                    }
+
+                                    let valid = probe.len() == 64
+                                        && probe.iter().enumerate().all(|(index, value)| {
+                                            *value == index as u64 * 3
+                                        });
+                                    serial::write_str(if valid {
+                                        "X11-OS: heap allocation verified\r\n"
+                                    } else {
+                                        "X11-OS: heap allocation verification failed\r\n"
+                                    });
+
+                                    serial::write_str("X11-OS: heap used bytes = ");
+                                    serial::write_usize(heap::GLOBAL.used());
+                                    serial::write_str("\r\n");
+                                }
+                                Err(_) => {
+                                    serial::write_str("X11-OS: heap initialization failed\r\n");
+                                }
+                            }
+                        } else {
+                            serial::write_str("X11-OS: heap region size mismatch\r\n");
+                        }
+                    } else {
+                        serial::write_str("X11-OS: invalid heap region\r\n");
+                    }
+                } else {
+                    serial::write_str("X11-OS: heap direct-map translation overflow\r\n");
+                }
+            } else {
+                serial::write_str("X11-OS: heap physical range invalid\r\n");
+            }
+        } else {
+            serial::write_str("X11-OS: insufficient contiguous frames for heap\r\n");
+        }
     }
 
     serial::write_str("X11-OS: entering idle state\r\n");
