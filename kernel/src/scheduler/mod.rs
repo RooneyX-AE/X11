@@ -1,11 +1,13 @@
 //! Architecture-independent scheduler foundation.
 //!
-//! This layer owns task lifecycle and run-queue policy. Architecture-specific
-//! register save/restore and address-space switching stay below this boundary.
+//! Task control blocks are individually heap allocated so growing the slot
+//! table never relocates a live task object. Architecture-specific execution
+//! state may therefore safely retain a stable pointer to its owning task.
 
 mod run_queue;
 mod task;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 pub use run_queue::RunQueue;
@@ -19,7 +21,8 @@ pub struct DispatchDecision {
 
 #[derive(Debug, Default)]
 pub struct Scheduler {
-    tasks: Vec<Option<TaskControlBlock>>,
+    // `Box` keeps each TCB at a stable address even when this slot table grows.
+    tasks: Vec<Option<Box<TaskControlBlock>>>,
     generations: Vec<u32>,
     ready: RunQueue,
     current: Option<TaskId>,
@@ -45,18 +48,17 @@ impl Scheduler {
             let generation = self.generations[index].wrapping_add(1).max(1);
             self.generations[index] = generation;
             let id = TaskId::new(index as u32, generation);
-            *slot = Some(TaskControlBlock::new(id, priority));
+            *slot = Some(Box::new(TaskControlBlock::new(id, priority)));
             return id;
         }
 
         let index = self.tasks.len();
         let generation = 1;
-        self.tasks.push(Some(TaskControlBlock::new(
-            TaskId::new(index as u32, generation),
-            priority,
-        )));
+        let id = TaskId::new(index as u32, generation);
+        self.tasks
+            .push(Some(Box::new(TaskControlBlock::new(id, priority))));
         self.generations.push(generation);
-        TaskId::new(index as u32, generation)
+        id
     }
 
     pub fn make_ready(&mut self, id: TaskId) -> bool {
@@ -150,12 +152,12 @@ impl Scheduler {
     }
 
     fn task(&self, id: TaskId) -> Option<&TaskControlBlock> {
-        let task = self.tasks.get(id.index() as usize)?.as_ref()?;
+        let task = self.tasks.get(id.index() as usize)?.as_deref()?;
         (task.id() == id).then_some(task)
     }
 
     fn task_mut(&mut self, id: TaskId) -> Option<&mut TaskControlBlock> {
-        let task = self.tasks.get_mut(id.index() as usize)?.as_mut()?;
+        let task = self.tasks.get_mut(id.index() as usize)?.as_deref_mut()?;
         if task.id() == id {
             Some(task)
         } else {
