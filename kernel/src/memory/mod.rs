@@ -7,6 +7,7 @@
 
 mod boot;
 mod frame;
+mod mapper;
 mod page;
 mod page_table;
 mod physical;
@@ -15,8 +16,9 @@ mod virtual;
 
 pub use boot::MemorySummary;
 pub use frame::{EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE};
+pub use mapper::{X86Flush, X86PageTableMapper};
 pub use page::{Page4K, PAGE_SIZE_4K};
-pub use page_table::{KERNEL_ADDRESS_SPACE, MappingError, PageTableMapper};
+pub use page_table::{KERNEL_ADDRESS_SPACE, MappingError, MappingFlush, PageTableMapper};
 pub use physical::PhysicalMemoryMapping;
 pub use region::PhysRange;
 pub use virtual::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
