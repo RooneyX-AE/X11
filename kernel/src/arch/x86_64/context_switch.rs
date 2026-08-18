@@ -101,6 +101,13 @@ pub fn bootstrap_kernel_context(stack_top: u64, activation: &ActivationRecord) -
     bootstrap_context(stack_top, activation, task_trampoline)
 }
 
+/// Backward-compatible smoke-test entry used by the boot validation path.
+/// The real A→B→A implementation lives in `voluntary_switch` so the context
+/// primitive remains separate from its integration test.
+pub fn smoke_test() -> bool {
+    super::voluntary_switch::run()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_context, Context};
