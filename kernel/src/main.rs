@@ -65,6 +65,36 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     }
 
+    if let (Some(mapping), Some(rsdp_address)) = (
+        physical_mapping,
+        Option::<u64>::from(boot_info.rsdp_addr),
+    ) {
+        // SAFETY: `rsdp_address` is supplied by the bootloader and `mapping`
+        // is the bootloader's validated direct physical-memory mapping.
+        match unsafe { arch::x86_64::acpi::discover(rsdp_address, mapping) } {
+            Ok(topology) => {
+                serial::write_str("X11-OS: ACPI MADT discovered\r\n");
+                serial::write_str("X11-OS: local APIC records = ");
+                serial::write_usize(topology.local_apic_count);
+                serial::write_str("\r\n");
+                serial::write_str("X11-OS: local x2APIC records = ");
+                serial::write_usize(topology.local_x2apic_count);
+                serial::write_str("\r\n");
+                serial::write_str("X11-OS: I/O APIC records = ");
+                serial::write_usize(topology.io_apic_count);
+                serial::write_str("\r\n");
+                serial::write_str("X11-OS: interrupt source overrides = ");
+                serial::write_usize(topology.source_override_count);
+                serial::write_str("\r\n");
+            }
+            Err(_) => {
+                serial::write_str("X11-OS: ACPI MADT discovery failed\r\n");
+            }
+        }
+    } else {
+        serial::write_str("X11-OS: ACPI RSDP unavailable\r\n");
+    }
+
     let mut frame_allocator = memory::EarlyFrameAllocator::new(&boot_info.memory_regions);
     let first_frame = frame_allocator.allocate_frame();
     match first_frame {
