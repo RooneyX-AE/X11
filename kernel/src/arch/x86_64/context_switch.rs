@@ -32,8 +32,26 @@ impl Context {
     }
 }
 
+const CONTEXT_RSP_OFFSET: usize = core::mem::offset_of!(Context, rsp);
+const CONTEXT_RBP_OFFSET: usize = core::mem::offset_of!(Context, rbp);
+const CONTEXT_RBX_OFFSET: usize = core::mem::offset_of!(Context, rbx);
+const CONTEXT_R12_OFFSET: usize = core::mem::offset_of!(Context, r12);
+const CONTEXT_R13_OFFSET: usize = core::mem::offset_of!(Context, r13);
+const CONTEXT_R14_OFFSET: usize = core::mem::offset_of!(Context, r14);
+const CONTEXT_R15_OFFSET: usize = core::mem::offset_of!(Context, r15);
+const CONTEXT_RIP_OFFSET: usize = core::mem::offset_of!(Context, rip);
+
 const _: () = assert!(core::mem::size_of::<Context>() == 64);
 const _: () = assert!(core::mem::align_of::<Context>() == 8);
+// These offsets are part of the switch/return assembly ABI below.
+const _: () = assert!(CONTEXT_RSP_OFFSET == 0);
+const _: () = assert!(CONTEXT_RBP_OFFSET == 8);
+const _: () = assert!(CONTEXT_RBX_OFFSET == 16);
+const _: () = assert!(CONTEXT_R12_OFFSET == 24);
+const _: () = assert!(CONTEXT_R13_OFFSET == 32);
+const _: () = assert!(CONTEXT_R14_OFFSET == 40);
+const _: () = assert!(CONTEXT_R15_OFFSET == 48);
+const _: () = assert!(CONTEXT_RIP_OFFSET == 56);
 
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn switch(current: *mut Context, next: *const Context) {
@@ -126,6 +144,8 @@ mod tests {
     fn context_layout_is_stable() {
         assert_eq!(core::mem::size_of::<Context>(), 64);
         assert_eq!(core::mem::align_of::<Context>(), 8);
+        assert_eq!(core::mem::offset_of!(Context, rsp), 0);
+        assert_eq!(core::mem::offset_of!(Context, rip), 56);
     }
 
     #[test]
