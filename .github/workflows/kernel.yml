@@ -72,6 +72,7 @@ jobs:
           test -n "$firmware"
           set +e
           timeout 12s qemu-system-x86_64 \
+            -no-reboot \
             -bios "$firmware" \
             -drive "format=raw,file=$image" \
             -serial stdio \
@@ -123,6 +124,13 @@ jobs:
               if next_position < 0:
                   raise SystemExit(f"missing or out-of-order runtime marker: {marker}")
               position = next_position
+
+          for marker in (
+              "X11-OS: task A resumed after timer preemption",
+              "X11-OS: task B resumed through kernel iretq",
+          ):
+              if log.count(marker) < 1:
+                  raise SystemExit(f"preemption resume marker missing: {marker}")
 
           tick_match = re.search(r"timer ticks observed after iretq = (\d+)", log)
           if not tick_match or int(tick_match.group(1)) < 2:
