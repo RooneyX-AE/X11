@@ -81,11 +81,7 @@ impl ExecutionRegistry {
         }
 
         let context = *binding.context();
-        if context.is_initialized() {
-            Some(PreemptionPlan::ReturnToContext { task_id, context })
-        } else {
-            Some(PreemptionPlan::Bootstrap { task_id, context })
-        }
+        context.is_initialized().then_some(PreemptionPlan::ReturnToContext { task_id, context })
     }
 
     /// Consumes a previously interrupted kernel snapshot when the scheduler has
