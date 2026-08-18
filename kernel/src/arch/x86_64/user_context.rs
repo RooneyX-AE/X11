@@ -3,6 +3,8 @@
 //! This is data only. Entry/return assembly remains separate so process
 //! construction cannot accidentally perform a privilege transition itself.
 
+use crate::process::InitialContext;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UserContext {
@@ -11,6 +13,11 @@ pub struct UserContext {
     pub rflags: u64,
     pub cs: u16,
     pub ss: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserContextError {
+    InvalidSelectors,
 }
 
 impl UserContext {
@@ -22,6 +29,17 @@ impl UserContext {
             cs,
             ss,
         }
+    }
+
+    pub fn from_initial(
+        context: InitialContext,
+        user_code: u16,
+        user_data: u16,
+    ) -> Result<Self, UserContextError> {
+        if user_code & 3 != 3 || user_data & 3 != 3 {
+            return Err(UserContextError::InvalidSelectors);
+        }
+        Ok(Self::new(context.entry(), context.stack_pointer(), user_code, user_data))
     }
 
     pub const fn is_user_selectors(self, user_code: u16, user_data: u16) -> bool {
@@ -36,20 +54,28 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    use super::UserContext;
+    use super::{UserContext, UserContextError};
+    use crate::memory::{user_stack_range, USER_SPACE_START};
+    use crate::process::InitialContext;
 
     #[test]
-    fn builds_ring3_context_with_interrupts_enabled() {
-        let context = UserContext::new(0x400000, 0x800000, 0x23, 0x1b);
-        assert_eq!(context.rip, 0x400000);
-        assert_eq!(context.rsp, 0x800000);
+    fn builds_ring3_context_from_process_context() {
+        let stack = user_stack_range().unwrap();
+        let initial = InitialContext::new(USER_SPACE_START + 0x1000, stack.end()).unwrap();
+        let context = UserContext::from_initial(initial, 0x23, 0x1b).unwrap();
+        assert_eq!(context.rip, USER_SPACE_START + 0x1000);
+        assert_eq!(context.rsp, stack.end());
         assert_eq!(context.rflags & (1 << 9), 1 << 9);
         assert!(context.is_user_selectors(0x23, 0x1b));
     }
 
     #[test]
     fn rejects_kernel_selectors() {
-        let context = UserContext::new(0x400000, 0x800000, 0x08, 0x10);
-        assert!(!context.is_user_selectors(0x23, 0x1b));
+        let stack = user_stack_range().unwrap();
+        let initial = InitialContext::new(USER_SPACE_START + 0x1000, stack.end()).unwrap();
+        assert_eq!(
+            UserContext::from_initial(initial, 0x08, 0x10),
+            Err(UserContextError::InvalidSelectors)
+        );
     }
 }
