@@ -4,6 +4,7 @@ pub mod acpi;
 pub mod apic;
 pub mod context_switch;
 pub mod execution;
+pub mod interrupt_frame;
 pub mod ioapic;
 pub mod irq_routing;
 pub mod lapic_timer;
