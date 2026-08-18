@@ -32,6 +32,37 @@ impl Frame {
     }
 }
 
+/// A physically contiguous run of 4 KiB frames already owned by the caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContiguousFrames {
+    start: u64,
+    frame_count: usize,
+}
+
+impl ContiguousFrames {
+    pub const fn start_address(self) -> u64 {
+        self.start
+    }
+
+    pub const fn frame_count(self) -> usize {
+        self.frame_count
+    }
+
+    pub const fn byte_len(self) -> Option<usize> {
+        self.frame_count.checked_mul(FRAME_SIZE as usize)
+    }
+
+    pub const fn byte_end(self) -> Option<u64> {
+        let bytes = self.frame_count.checked_mul(FRAME_SIZE as usize)?;
+        self.start.checked_add(bytes as u64)
+    }
+
+    pub const fn physical_range(self) -> Option<PhysRange> {
+        let end = self.byte_end()?;
+        PhysRange::new(self.start, end)
+    }
+}
+
 /// Interface used by page tables and other consumers that need physical frames.
 pub trait FrameAllocator {
     /// Allocates one usable physical frame.
@@ -80,6 +111,39 @@ impl<'a> EarlyFrameAllocator<'a> {
 
         false
     }
+
+    /// Allocates a contiguous run from one usable physical-memory region.
+    ///
+    /// The range is consumed from the same monotonic allocator as single-frame
+    /// allocations, so the returned pages will never be handed out again.
+    pub fn allocate_contiguous(&mut self, frame_count: usize) -> Option<ContiguousFrames> {
+        if frame_count == 0 {
+            return None;
+        }
+
+        let bytes = frame_count.checked_mul(FRAME_SIZE as usize)? as u64;
+
+        loop {
+            if self.next_address < self.current_end {
+                let end = self.next_address.checked_add(bytes)?;
+                if end <= self.current_end {
+                    let range = ContiguousFrames {
+                        start: self.next_address,
+                        frame_count,
+                    };
+                    self.next_address = end;
+                    return Some(range);
+                }
+            }
+
+            self.next_address = 0;
+            self.current_end = 0;
+
+            if !self.select_next_usable_region() {
+                return None;
+            }
+        }
+    }
 }
 
 impl FrameAllocator for EarlyFrameAllocator<'_> {
@@ -110,7 +174,7 @@ const fn align_up(address: u64) -> Option<u64> {
 mod tests {
     use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
-    use super::{EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE};
+    use super::{ContiguousFrames, EarlyFrameAllocator, Frame, FrameAllocator, FRAME_SIZE};
 
     fn regions(items: &'static mut [MemoryRegion]) -> bootloader_api::info::MemoryRegions {
         items.into()
@@ -163,5 +227,49 @@ mod tests {
 
         assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x2000);
         assert!(allocator.allocate_frame().is_none());
+    }
+
+    #[test]
+    fn contiguous_allocation_consumes_one_region() {
+        let items = Box::leak(Box::new([region(
+            0x4000,
+            0x10000,
+            MemoryRegionKind::Usable,
+        )]));
+        let regions = regions(items);
+        let mut allocator = EarlyFrameAllocator::new(&regions);
+
+        let frames = allocator.allocate_contiguous(4).unwrap();
+        assert_eq!(frames.start_address(), 0x4000);
+        assert_eq!(frames.frame_count(), 4);
+        assert_eq!(frames.byte_len(), Some(4 * FRAME_SIZE as usize));
+        assert_eq!(frames.byte_end(), Some(0x8000));
+        assert_eq!(frames.physical_range().unwrap().end(), 0x8000);
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x8000);
+    }
+
+    #[test]
+    fn contiguous_allocation_does_not_cross_region_boundaries() {
+        let items = Box::leak(Box::new([
+            region(0x4000, 0x8000, MemoryRegionKind::Usable),
+            region(0x9000, 0xB000, MemoryRegionKind::Usable),
+        ]));
+        let regions = regions(items);
+        let mut allocator = EarlyFrameAllocator::new(&regions);
+
+        assert_eq!(
+            allocator.allocate_contiguous(2),
+            Some(ContiguousFrames {
+                start: 0x4000,
+                frame_count: 2
+            })
+        );
+        assert_eq!(
+            allocator.allocate_contiguous(2),
+            Some(ContiguousFrames {
+                start: 0x9000,
+                frame_count: 2
+            })
+        );
     }
 }
