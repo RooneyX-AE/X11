@@ -1,6 +1,6 @@
 //! Virtual-page primitives independent of page-table implementation.
 
-use super::virtual::VirtRange;
+use super::address_space::VirtRange;
 
 /// Base page size used by the initial x86_64 paging configuration.
 pub const PAGE_SIZE_4K: u64 = 4096;
