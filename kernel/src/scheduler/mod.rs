@@ -185,7 +185,7 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::{Priority, Scheduler, TaskState};
+    use super::{Priority, Scheduler, SleepQueue, TaskState};
 
     #[test]
     fn scheduler_round_robin_cycles_a_b_a_b() {
@@ -214,5 +214,38 @@ mod tests {
         assert_eq!(scheduler.schedule_next().next, None);
         assert_eq!(scheduler.state(task), Some(TaskState::Running));
         assert_eq!(scheduler.ready_len(), 0);
+    }
+
+    #[test]
+    fn sleep_blocks_current_then_expiry_makes_task_ready() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(task));
+        assert_eq!(scheduler.schedule_next().next, Some(task));
+
+        let mut sleepers = SleepQueue::new();
+        assert_eq!(scheduler.sleep_current_until(100, &mut sleepers), Ok(task));
+        assert_eq!(scheduler.current(), None);
+        assert_eq!(scheduler.state(task), Some(TaskState::Blocked));
+
+        assert!(scheduler.expire_sleepers(99, &mut sleepers).is_empty());
+        assert_eq!(scheduler.state(task), Some(TaskState::Blocked));
+        assert_eq!(scheduler.expire_sleepers(100, &mut sleepers), alloc::vec![task]);
+        assert_eq!(scheduler.state(task), Some(TaskState::Ready));
+        assert_eq!(scheduler.next_ready(), Some(task));
+    }
+
+    #[test]
+    fn duplicate_sleep_rolls_back_state() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(task));
+        assert_eq!(scheduler.schedule_next().next, Some(task));
+
+        let mut sleepers = SleepQueue::new();
+        assert!(sleepers.insert(super::SleepEntry::new(50, task)));
+        assert_eq!(scheduler.sleep_current_until(100, &mut sleepers), Err(super::SchedulerError::SleepQueueAlreadyContainsTask));
+        assert_eq!(scheduler.current(), Some(task));
+        assert_eq!(scheduler.state(task), Some(TaskState::Running));
     }
 }
