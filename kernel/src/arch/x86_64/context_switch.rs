@@ -77,12 +77,12 @@ pub unsafe extern "sysv64" fn switch(current: *mut Context, next: *const Context
 pub fn bootstrap_context(stack_top: u64, entry: extern "C" fn() -> !) -> Option<Context> {
     let aligned = stack_top.checked_sub(8)? & !0xf;
     let entry_rsp = aligned.checked_add(8)?;
-    if entry_rsp == 0 || entry_rsp > stack_top {
+    if entry_rsp == 0 || entry_rsp > stack_top || entry_rsp & 0xf != 8 {
         return None;
     }
 
     Some(Context {
-        rsp: aligned,
+        rsp: entry_rsp,
         rbp: 0,
         rbx: 0,
         r12: 0,
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn bootstrap_stack_keeps_sysv_entry_alignment() {
         let context = bootstrap_context(0x20_000, never_returns).unwrap();
-        assert_eq!((context.rsp + 8) & 0xf, 0x8);
+        assert_eq!(context.rsp & 0xf, 0x8);
         assert!(context.is_initialized());
     }
 
