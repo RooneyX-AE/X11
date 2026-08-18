@@ -1,10 +1,12 @@
 //! Architecture-independent syscall dispatch contract.
 //!
-//! This layer deliberately stops before touching CPU register frames or raw
-//! user pointers. Architecture-specific entry code can later translate its
-//! register ABI into `SyscallRequest` and call `dispatch` here.
+//! This layer decodes the shared ABI and validates arguments that can be
+//! checked without dereferencing user memory. Architecture-specific entry
+//! code can translate its register ABI into `SyscallRequest` and call `dispatch`.
 
 use x11_os_abi::{Syscall, UserSlice};
+
+use crate::memory::{validate_slice, UserRangeError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallRequest {
@@ -31,6 +33,10 @@ impl SyscallRequest {
             _ => None,
         }
     }
+
+    pub const fn user_slice(self) -> UserSlice {
+        UserSlice { ptr: self.arg0, len: self.arg1 }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,20 +44,30 @@ pub enum SyscallError {
     UnknownNumber,
     NotImplemented,
     InvalidArguments,
+    InvalidUserRange(UserRangeError),
 }
 
 pub type SyscallResult = Result<u64, SyscallError>;
 
 pub fn dispatch(request: SyscallRequest) -> SyscallResult {
     match request.syscall().ok_or(SyscallError::UnknownNumber)? {
-        Syscall::Write | Syscall::Exit | Syscall::Yield => Err(SyscallError::NotImplemented),
+        Syscall::Write => sys_write(request.user_slice()),
+        Syscall::Exit | Syscall::Yield => Err(SyscallError::NotImplemented),
     }
+}
+
+fn sys_write(slice: UserSlice) -> SyscallResult {
+    validate_slice(slice).map_err(SyscallError::InvalidUserRange)?;
+    // The range is validated, but the active address space is not yet able to
+    // prove that every page is mapped and readable. Do not dereference it here.
+    Err(SyscallError::NotImplemented)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{dispatch, SyscallError, SyscallRequest};
-    use x11_os_abi::Syscall;
+    use crate::memory::UserRangeError;
+    use x11_os_abi::{Syscall, UserSlice};
 
     #[test]
     fn decodes_shared_syscall_numbers() {
@@ -82,10 +98,17 @@ mod tests {
     }
 
     #[test]
-    fn known_syscalls_are_explicitly_not_implemented_yet() {
+    fn write_rejects_kernel_address_before_dereference() {
+        let request = SyscallRequest::write(UserSlice { ptr: crate::memory::KERNEL_SPACE_START, len: 1 });
         assert_eq!(
-            dispatch(SyscallRequest::new(Syscall::Write.number(), 0, 0, 0)),
-            Err(SyscallError::NotImplemented)
+            dispatch(request),
+            Err(SyscallError::InvalidUserRange(UserRangeError::OutsideUserSpace))
         );
+    }
+
+    #[test]
+    fn known_write_in_user_range_is_not_implemented_until_page_validation_exists() {
+        let request = SyscallRequest::write(UserSlice { ptr: crate::memory::USER_SPACE_START, len: 1 });
+        assert_eq!(dispatch(request), Err(SyscallError::NotImplemented));
     }
 }
