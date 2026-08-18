@@ -4,15 +4,14 @@
 //! the backend does not assume a particular processor bus or crystal clock.
 //! Calibration is performed while the timer interrupt remains masked.
 
-use x86_64::registers::model_specific::Msr;
-
-use crate::timer::{Clocksource, TimerDevice, TimerInterval};
+use crate::interrupts::TIMER_VECTOR;
 use crate::memory::PhysicalMemoryMapping;
+use crate::timer::{TimerDevice, TimerInterval};
+use x86_64::registers::model_specific::Msr;
 
 use super::apic::ApicMode;
 use super::tsc::TscClocksource;
 
-const TIMER_VECTOR: u8 = 32;
 const LVT_TIMER_OFFSET: u64 = 0x320;
 const TIMER_INIT_COUNT_OFFSET: u64 = 0x380;
 const TIMER_CURRENT_COUNT_OFFSET: u64 = 0x390;
@@ -80,9 +79,7 @@ impl LapicTimer {
                     return Err(LapicTimerError::UnsupportedMode);
                 };
                 let (frame, _) = x86_64::registers::model_specific::ApicBase::read();
-                let base = frame
-                    .start_address()
-                    .as_u64();
+                let base = frame.start_address().as_u64();
                 let mapped = mapping
                     .translate(base)
                     .ok_or(LapicTimerError::InvalidMapping)?;
@@ -115,7 +112,10 @@ impl LapicTimer {
     /// Calibrates the LAPIC timer against an invariant TSC.
     ///
     /// The timer interrupt stays masked during calibration.
-    pub fn calibrate(&mut self, tsc: &TscClocksource) -> Result<LapicTimerFrequency, LapicTimerError> {
+    pub fn calibrate(
+        &mut self,
+        tsc: &TscClocksource,
+    ) -> Result<LapicTimerFrequency, LapicTimerError> {
         unsafe {
             self.write_divide(DIVIDE_BY_16_ENCODING)?;
             self.write_lvt((TIMER_VECTOR as u32) | LVT_MASKED)?;
@@ -188,7 +188,9 @@ impl LapicTimer {
         match self.mode {
             ApicMode::XApic => {
                 let base = self.mmio_base.ok_or(LapicTimerError::InvalidMapping)?;
-                let address = base.checked_add(offset).ok_or(LapicTimerError::InvalidMapping)?
+                let address = base
+                    .checked_add(offset)
+                    .ok_or(LapicTimerError::InvalidMapping)?
                     as *mut u32;
                 // SAFETY: `base` was derived from IA32_APIC_BASE through the
                 // bootloader physical direct map and `offset` is an APIC timer
@@ -205,11 +207,17 @@ impl LapicTimer {
         }
     }
 
-    unsafe fn read_register(&self, offset: u64, msr: Option<Msr>) -> Result<u32, LapicTimerError> {
+    unsafe fn read_register(
+        &self,
+        offset: u64,
+        msr: Option<Msr>,
+    ) -> Result<u32, LapicTimerError> {
         match self.mode {
             ApicMode::XApic => {
                 let base = self.mmio_base.ok_or(LapicTimerError::InvalidMapping)?;
-                let address = base.checked_add(offset).ok_or(LapicTimerError::InvalidMapping)?
+                let address = base
+                    .checked_add(offset)
+                    .ok_or(LapicTimerError::InvalidMapping)?
                     as *const u32;
                 // SAFETY: Same MMIO invariant as `write_register`.
                 Ok(unsafe { core::ptr::read_volatile(address) })
@@ -227,7 +235,10 @@ impl TimerDevice for LapicTimer {
     type Error = LapicTimerError;
 
     fn set_periodic(&mut self, interval: TimerInterval) -> Result<(), Self::Error> {
-        let frequency = self.frequency.ok_or(LapicTimerError::NotCalibrated)?.hz;
+        let frequency = self
+            .frequency
+            .ok_or(LapicTimerError::NotCalibrated)?
+            .hz;
         let initial = frequency
             .checked_mul(interval.as_nanos())
             .and_then(|value| value.checked_div(1_000_000_000))
