@@ -5,7 +5,7 @@
 //! architecture backend supplies `ImagePageWriter`, keeping unsafe direct-map
 //! access out of the process loader.
 
-use super::{ElfImage, LoadResult, MAX_MAPPED_PAGES, MappedPage};
+use super::{ElfImage, LoadResult};
 use crate::memory::PAGE_SIZE_4K;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
