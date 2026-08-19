@@ -3,10 +3,8 @@
 use crate::process::UserLaunchPlan;
 
 use super::address_space::AddressSpaceRoot;
+use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use super::user_return::{UserReturnError, UserReturnFrame};
-
-pub const USER_CODE_SELECTOR: u16 = 0x1b;
-pub const USER_DATA_SELECTOR: u16 = 0x13;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserLaunchAdapterError {
