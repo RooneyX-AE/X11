@@ -43,12 +43,22 @@ pub struct PageAccess {
     pub user: bool,
     pub readable: bool,
     pub writable: bool,
+    pub executable: bool,
 }
 
 impl PageAccess {
-    pub const fn unmapped() -> Self { Self { mapped: false, user: false, readable: false, writable: false } }
-    pub const fn user_read_only() -> Self { Self { mapped: true, user: true, readable: true, writable: false } }
-    pub const fn user_read_write() -> Self { Self { mapped: true, user: true, readable: true, writable: true } }
+    pub const fn unmapped() -> Self {
+        Self { mapped: false, user: false, readable: false, writable: false, executable: false }
+    }
+    pub const fn user_read_only() -> Self {
+        Self { mapped: true, user: true, readable: true, writable: false, executable: false }
+    }
+    pub const fn user_read_write() -> Self {
+        Self { mapped: true, user: true, readable: true, writable: true, executable: false }
+    }
+    pub const fn user_read_execute() -> Self {
+        Self { mapped: true, user: true, readable: true, writable: false, executable: true }
+    }
 }
 
 pub trait PageTableMapper {
@@ -78,5 +88,6 @@ mod tests {
         assert!(MappingFlags::read_execute().executable());
         assert!(MappingFlags::read_write().writable());
         assert!(MappingFlags::read_write_execute().is_writable_executable());
+        assert!(PageAccess::user_read_execute().executable);
     }
 }
