@@ -4,7 +4,7 @@
 //! mechanism required by that task's execution state.
 
 use super::context_switch::Context;
-use super::interrupted_state::KernelPreemptState;
+use super::interrupted_state::InterruptedState;
 use crate::scheduler::TaskId;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -12,7 +12,7 @@ pub enum PreemptionPlan {
     /// The selected task has a cooperative kernel context saved or initialized.
     ReturnToContext { task_id: TaskId, context: Context },
     /// The selected task owns a complete kernel interrupted-state snapshot.
-    IretKernel { task_id: TaskId, state: KernelPreemptState },
+    IretKernel { task_id: TaskId, state: InterruptedState },
 }
 
 impl PreemptionPlan {
