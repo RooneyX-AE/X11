@@ -8,8 +8,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use spin::Once;
 use x86_64::registers::control::Cr2;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode, PrivilegeLevel};
-use x86_64::VirtAddr;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::{PrivilegeLevel, VirtAddr};
 
 use crate::interrupts::{InterruptEvent, InterruptSource, TIMER_VECTOR};
 
@@ -31,7 +31,7 @@ pub fn init() {
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         unsafe {
-            idt[USER_TRAP_VECTOR as usize]
+            idt[USER_TRAP_VECTOR]
                 .set_handler_addr(VirtAddr::new(
                     interrupt_entry::syscall_entry as *const () as usize as u64,
                 ))
@@ -76,11 +76,6 @@ extern "x86-interrupt" fn double_fault_handler(_stack_frame: InterruptStackFrame
     loop { core::hint::spin_loop(); }
 }
 
-/// Shared timer bookkeeping for the raw timer entry.
-///
-/// This is the sole timer-event accounting path. It owns no scheduler policy;
-/// the interrupt-return boundary decides whether to keep the current task or
-/// transfer control to a different execution context.
 pub fn record_timer_interrupt() {
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     TIMER_PENDING.store(true, Ordering::Release);
@@ -88,8 +83,3 @@ pub fn record_timer_interrupt() {
         crate::arch::x86_64::local_apic::end_of_interrupt(event);
     }
 }
-
-pub fn timer_ticks() -> u64 { TIMER_TICKS.load(Ordering::Acquire) }
-pub fn take_timer_pending() -> bool { TIMER_PENDING.swap(false, Ordering::AcqRel) }
-pub fn user_trap_count() -> u64 { USER_TRAP_COUNT.load(Ordering::Acquire) }
-pub fn user_syscall_ok_count() -> u64 { USER_SYSCALL_OK_COUNT.load(Ordering::Acquire) }
