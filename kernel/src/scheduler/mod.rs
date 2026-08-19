@@ -31,6 +31,8 @@ pub enum SchedulerError {
     TaskNotCreated,
     WaitQueueAlreadyContainsTask,
     SleepQueueAlreadyContainsTask,
+    CurrentTaskMismatch,
+    SuccessorNotReady,
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +99,35 @@ impl Scheduler {
         transitioned && self.ready.push(id)
     }
     pub fn next_ready(&self) -> Option<TaskId> { self.ready.peek() }
+
+    /// Terminates the current task and immediately makes the expected ready
+    /// successor the running task. No partial scheduler state is committed if
+    /// either identity check fails.
+    pub fn terminate_current_to(&mut self, successor: TaskId) -> Result<TaskId, SchedulerError> {
+        let current = self.current.ok_or(SchedulerError::TaskNotFound)?;
+        if current == successor { return Err(SchedulerError::CurrentTaskMismatch); }
+        if self.ready.peek() != Some(successor) || self.state(successor) != Some(TaskState::Ready) {
+            return Err(SchedulerError::SuccessorNotReady);
+        }
+
+        let current_index = current.index() as usize;
+        let successor_index = successor.index() as usize;
+        let current_ok = self.tasks.get(current_index).and_then(Option::as_ref).is_some_and(|task| task.id() == current && task.state() == TaskState::Running);
+        let successor_ok = self.tasks.get(successor_index).and_then(Option::as_ref).is_some_and(|task| task.id() == successor && task.state() == TaskState::Ready);
+        if !current_ok { return Err(SchedulerError::TaskNotFound); }
+        if !successor_ok { return Err(SchedulerError::SuccessorNotReady); }
+
+        let current_task = self.tasks[current_index].as_mut().ok_or(SchedulerError::TaskNotFound)?;
+        if !current_task.transition(TaskState::Exited) { return Err(SchedulerError::TaskNotFound); }
+        let _ = current_task.detach_execution();
+        self.tasks[current_index] = None;
+        let queued = self.ready.pop();
+        if queued != Some(successor) { return Err(SchedulerError::SuccessorNotReady); }
+        let successor_task = self.tasks[successor_index].as_mut().ok_or(SchedulerError::SuccessorNotReady)?;
+        if !successor_task.transition(TaskState::Running) { return Err(SchedulerError::SuccessorNotReady); }
+        self.current = Some(successor);
+        Ok(successor)
+    }
 
     pub fn schedule_next(&mut self) -> DispatchDecision {
         let previous = self.current;
@@ -198,6 +229,8 @@ impl Scheduler {
     fn task(&self, id: TaskId) -> Option<&TaskControlBlock> { let task = self.tasks.get(id.index() as usize)?.as_deref()?; (task.id() == id).then_some(task) }
     fn task_mut(&mut self, id: TaskId) -> Option<&mut TaskControlBlock> { let task = self.tasks.get_mut(id.index() as usize)?.as_deref_mut()?; if task.id() == id { Some(task) } else { None } }
 }
+
+impl Default for Scheduler { fn default() -> Self { Self::new() } }
 
 #[cfg(test)]
 mod tests {
@@ -308,15 +341,31 @@ mod tests {
     }
 
     #[test]
-    fn stale_waiter_id_is_ignored_after_task_exit() {
+    fn terminate_current_to_expected_successor_is_atomic_at_scheduler_boundary() {
         let mut scheduler = Scheduler::new();
-        let old = scheduler.create_task(Priority::DEFAULT);
-        let mut waiters = WaitQueue::new();
-        assert!(waiters.enqueue(old).is_ok());
-        let replacement = scheduler.create_task(Priority::DEFAULT);
-        assert_ne!(old, replacement);
-        assert_eq!(scheduler.wake_one(&mut waiters), None);
-        assert_eq!(scheduler.state(replacement), Some(TaskState::Created));
-        assert!(waiters.is_empty());
+        let current = scheduler.create_user_task(Priority::DEFAULT);
+        let successor = scheduler.create_user_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(current));
+        assert!(scheduler.make_ready(successor));
+        assert_eq!(scheduler.schedule_next().next, Some(current));
+        assert_eq!(scheduler.terminate_current_to(successor), Ok(successor));
+        assert_eq!(scheduler.state(current), None);
+        assert_eq!(scheduler.current(), Some(successor));
+        assert_eq!(scheduler.state(successor), Some(TaskState::Running));
+        assert_eq!(scheduler.next_ready(), None);
+    }
+
+    #[test]
+    fn terminate_rejects_non_ready_successor_without_mutation() {
+        let mut scheduler = Scheduler::new();
+        let current = scheduler.create_user_task(Priority::DEFAULT);
+        let successor = scheduler.create_user_task(Priority::DEFAULT);
+        assert!(scheduler.make_ready(current));
+        assert!(scheduler.make_ready(successor));
+        assert_eq!(scheduler.schedule_next().next, Some(current));
+        assert_eq!(scheduler.terminate_current_to(current), Err(super::SchedulerError::CurrentTaskMismatch));
+        assert_eq!(scheduler.current(), Some(current));
+        assert_eq!(scheduler.state(current), Some(TaskState::Running));
+        assert_eq!(scheduler.state(successor), Some(TaskState::Ready));
     }
 }
