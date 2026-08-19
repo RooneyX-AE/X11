@@ -18,7 +18,7 @@ pub use execution::{ExecutionBinding, ExecutionHandle};
 pub use reschedule::{DisableGuard, PreemptionGate, RescheduleRequest};
 pub use run_queue::RunQueue;
 pub use sleep_queue::{SleepEntry, SleepQueue};
-pub use task::{ExecutionAttachError, Priority, TaskControlBlock, TaskId, TaskState};
+pub use task::{ExecutionAttachError, Priority, TaskControlBlock, TaskId, TaskKind, TaskState};
 pub use wait_queue::{WaitQueue, WaitQueueError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,19 +45,35 @@ impl Scheduler {
     pub const fn new() -> Self { Self { tasks: Vec::new(), generations: Vec::new(), ready: RunQueue::new(), current: None } }
 
     pub fn create_task(&mut self, priority: Priority) -> TaskId {
+        self.create_task_with_kind(priority, TaskKind::Kernel)
+    }
+
+    pub fn create_user_task(&mut self, priority: Priority) -> TaskId {
+        self.create_task_with_kind(priority, TaskKind::Userspace)
+    }
+
+    fn create_task_with_kind(&mut self, priority: Priority, kind: TaskKind) -> TaskId {
         if let Some((index, slot)) = self.tasks.iter_mut().enumerate().find(|(_, slot)| slot.is_none()) {
             let generation = self.generations[index].wrapping_add(1).max(1);
             self.generations[index] = generation;
             let id = TaskId::new(index as u32, generation);
-            *slot = Some(Box::new(TaskControlBlock::new(id, priority)));
+            *slot = Some(Box::new(match kind {
+                TaskKind::Kernel => TaskControlBlock::new(id, priority),
+                TaskKind::Userspace => TaskControlBlock::new_userspace(id, priority),
+            }));
             return id;
         }
         let index = self.tasks.len();
         let id = TaskId::new(index as u32, 1);
-        self.tasks.push(Some(Box::new(TaskControlBlock::new(id, priority))));
+        self.tasks.push(Some(Box::new(match kind {
+            TaskKind::Kernel => TaskControlBlock::new(id, priority),
+            TaskKind::Userspace => TaskControlBlock::new_userspace(id, priority),
+        })));
         self.generations.push(1);
         id
     }
+
+    pub fn task_kind(&self, id: TaskId) -> Option<TaskKind> { self.task(id).map(TaskControlBlock::kind) }
 
     pub fn attach_execution(&mut self, id: TaskId) -> Result<ExecutionHandle, SchedulerError> {
         let task = self.task_mut(id).ok_or(SchedulerError::TaskNotFound)?;
@@ -185,7 +201,15 @@ impl Scheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::{Priority, Scheduler, SleepEntry, SleepQueue, TaskState, WaitQueue};
+    use super::{Priority, Scheduler, SleepEntry, SleepQueue, TaskKind, TaskState, WaitQueue};
+
+    #[test]
+    fn userspace_task_creation_is_explicit() {
+        let mut scheduler = Scheduler::new();
+        let task = scheduler.create_user_task(Priority::DEFAULT);
+        assert_eq!(scheduler.task_kind(task), Some(TaskKind::Userspace));
+        assert_eq!(scheduler.execution(task), None);
+    }
 
     #[test]
     fn scheduler_round_robin_cycles_a_b_a_b() {
