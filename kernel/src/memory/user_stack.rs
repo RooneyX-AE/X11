@@ -10,22 +10,20 @@ pub const USER_STACK_SIZE: u64 = USER_STACK_PAGES * super::PAGE_SIZE_4K;
 pub const USER_STACK_TOP: u64 = KERNEL_SPACE_START - 0x1000;
 pub const USER_STACK_GUARD_SIZE: u64 = super::PAGE_SIZE_4K;
 
-pub const fn user_stack_range() -> Option<VirtRange> {
+pub fn user_stack_range() -> Option<VirtRange> {
     let top = USER_STACK_TOP;
     let data_start = top.checked_sub(USER_STACK_SIZE)?;
     VirtRange::new(data_start, top)
 }
 
-pub const fn user_stack_guard_range() -> Option<VirtRange> {
+pub fn user_stack_guard_range() -> Option<VirtRange> {
     let range = user_stack_range()?;
     let guard_start = range.start().checked_sub(USER_STACK_GUARD_SIZE)?;
     VirtRange::new(guard_start, range.start())
 }
 
-pub const fn is_valid_user_stack_pointer(rsp: u64) -> bool {
-    let Some(range) = user_stack_range() else {
-        return false;
-    };
+pub fn is_valid_user_stack_pointer(rsp: u64) -> bool {
+    let Some(range) = user_stack_range() else { return false; };
     rsp >= range.start() && rsp <= range.end() && rsp % 16 == 0
 }
 
