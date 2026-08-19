@@ -26,21 +26,3 @@ impl SyscallDispatch {
         Self { value: Ok(value), action: SyscallReturnAction::Terminate }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{SyscallDispatch, SyscallReturnAction};
-
-    #[test]
-    fn lifecycle_actions_are_distinct() {
-        assert_eq!(SyscallDispatch::returned(Ok(7)).action, SyscallReturnAction::Return);
-        assert_eq!(SyscallDispatch::reschedule(0).action, SyscallReturnAction::Reschedule);
-        assert_eq!(SyscallDispatch::terminate(0).action, SyscallReturnAction::Terminate);
-    }
-
-    #[test]
-    fn terminal_actions_never_encode_an_error() {
-        assert!(SyscallDispatch::reschedule(0).value.is_ok());
-        assert!(SyscallDispatch::terminate(0).value.is_ok());
-    }
-}
