@@ -12,12 +12,9 @@ use x86_64::structures::tss::TaskStateSegment;
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 const DOUBLE_FAULT_STACK_SIZE: usize = 32 * 1024;
 
-/// Ring-3 selectors are part of the kernel/user transition contract.
-///
-/// The descriptor order below is intentionally stable:
-///   0: kernel code, 1: kernel data, 2: user data, 3: user code, 4: TSS.
-pub const USER_DATA_SELECTOR: u16 = 0x13;
-pub const USER_CODE_SELECTOR: u16 = 0x1b;
+/// Ring-3 selectors are the single source of truth for the privilege-transition contract.
+pub(crate) const USER_DATA_SELECTOR: u16 = 0x13;
+pub(crate) const USER_CODE_SELECTOR: u16 = 0x1b;
 
 #[repr(align(16))]
 struct AlignedStack([u8; DOUBLE_FAULT_STACK_SIZE]);
