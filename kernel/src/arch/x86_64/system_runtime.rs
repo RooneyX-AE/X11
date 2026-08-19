@@ -8,6 +8,7 @@ use alloc::boxed::Box;
 
 use crate::process::{ProcessId, ProcessImage, ProcessManager, ProcessState};
 use crate::scheduler::{Priority, TaskId, TaskState};
+use crate::syscall::{ProcessSyscallControl, SyscallError};
 
 use super::runtime::{KernelRuntime, RuntimeError};
 use super::user_execution::{UserExecutionBinding, UserExecutionRegistry, UserExecutionRegistryError};
@@ -32,6 +33,10 @@ pub enum SystemRuntimeError {
     SchedulerTaskNotReady,
 }
 
+impl From<crate::process::ProcessManagerError> for SystemRuntimeError {
+    fn from(error: crate::process::ProcessManagerError) -> Self { Self::Process(error) }
+}
+
 impl SystemRuntime {
     pub fn new() -> Box<Self> {
         Box::new(Self {
@@ -48,9 +53,6 @@ impl SystemRuntime {
     pub const fn runtime_mut(&mut self) -> &mut KernelRuntime { &mut self.runtime }
     pub const fn userspace(&self) -> &UserExecutionRegistry { &self.userspace }
 
-    /// Binds the stable system owner to the bootstrap CPU. The contained
-    /// `KernelRuntime` keeps its existing timer/preemption binding; syscall
-    /// entry receives the higher-level system owner separately.
     pub unsafe fn bind_cpu(&mut self) -> Result<(), SystemRuntimeError> {
         unsafe { self.runtime.bind_cpu().map_err(SystemRuntimeError::Runtime)?; }
         unsafe {
@@ -61,9 +63,6 @@ impl SystemRuntime {
         Ok(())
     }
 
-    /// Adopts an already-prepared ring3 launch into the scheduler and userspace
-    /// registry. The process is not started here, preserving Ready -> Running
-    /// as an explicit lifecycle transition.
     pub fn spawn_user_ready(
         &mut self,
         image: ProcessImage,
@@ -118,13 +117,6 @@ impl SystemRuntime {
         Ok((spawned.id(), task))
     }
 
-    /// Starts exactly one userspace process and enters ring3. All identity and
-    /// scheduler invariants are checked before changing lifecycle state.
-    ///
-    /// # Safety
-    /// `bind_cpu()` must have succeeded, the prepared address space must remain
-    /// valid, and the caller must be at the kernel boundary from which the
-    /// process is allowed to become the current CPU owner.
     pub unsafe fn start_user(&mut self, process: ProcessId) -> Result<(), SystemRuntimeError> {
         let binding = self.processes.binding(process).map_err(SystemRuntimeError::Process)?
             .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
@@ -157,6 +149,43 @@ impl SystemRuntime {
         let task = self.runtime.manager().scheduler.current()?;
         self.userspace.get(task)
     }
+
+    fn current_binding_checked(&self) -> Result<UserExecutionBinding, SyscallError> {
+        let process = self.current_process.ok_or(SyscallError::InvalidArguments)?;
+        let binding = self.processes.binding(process).map_err(|_| SyscallError::InvalidArguments)?
+            .ok_or(SyscallError::InvalidArguments)?;
+        let task = self.runtime.manager().scheduler.current().ok_or(SyscallError::InvalidArguments)?;
+        if binding.task() != task || self.processes.state(process).map_err(|_| SyscallError::InvalidArguments)? != ProcessState::Running {
+            return Err(SyscallError::InvalidArguments);
+        }
+        let user = self.userspace.get(task).ok_or(SyscallError::InvalidArguments)?;
+        if user.process() != process || user.address_space() != binding.address_space() {
+            return Err(SyscallError::InvalidArguments);
+        }
+        Ok(user)
+    }
+}
+
+impl ProcessSyscallControl for SystemRuntime {
+    fn exit(&mut self, code: u64) -> Result<(), SyscallError> {
+        let user = self.current_binding_checked()?;
+        let process = user.process();
+        let task = user.task();
+        self.processes.exit(process).map_err(|_| SyscallError::InvalidArguments)?;
+        if !self.runtime.manager_mut().exit_current() {
+            return Err(SyscallError::InvalidArguments);
+        }
+        self.userspace.remove(task).map_err(|_| SyscallError::InvalidArguments)?;
+        self.current_process = None;
+        let _ = code;
+        Ok(())
+    }
+
+    fn yield_now(&mut self) -> Result<(), SyscallError> {
+        let _ = self.current_binding_checked()?;
+        self.runtime.request_reschedule();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -170,41 +199,18 @@ mod tests {
 
     fn image(id: AddressSpaceId) -> ProcessImage {
         let mut bytes = [0u8; 120];
-        bytes[0..4].copy_from_slice(b"\x7fELF");
-        bytes[4] = 2;
-        bytes[5] = 1;
-        bytes[16..18].copy_from_slice(&2u16.to_le_bytes());
-        bytes[18..20].copy_from_slice(&62u16.to_le_bytes());
-        bytes[24..32].copy_from_slice(&0x401000u64.to_le_bytes());
-        bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
-        bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
-        bytes[56..58].copy_from_slice(&1u16.to_le_bytes());
-        let p = 64usize;
-        bytes[p..p + 4].copy_from_slice(&1u32.to_le_bytes());
-        bytes[p + 4..p + 8].copy_from_slice(&5u32.to_le_bytes());
-        bytes[p + 16..p + 24].copy_from_slice(&0x401000u64.to_le_bytes());
-        bytes[p + 32..p + 40].copy_from_slice(&16u64.to_le_bytes());
-        bytes[p + 40..p + 48].copy_from_slice(&0x1000u64.to_le_bytes());
-        let parsed = ElfImage::parse(&bytes).unwrap();
-        let spec = AddressSpaceSpec::new(id);
-        let plan = LoadPlan::build(spec, parsed).unwrap();
-        ProcessImage::build(spec, plan, UserStackPlan::build().unwrap()).unwrap()
+        bytes[0..4].copy_from_slice(b"\x7fELF"); bytes[4]=2; bytes[5]=1; bytes[16..18].copy_from_slice(&2u16.to_le_bytes()); bytes[18..20].copy_from_slice(&62u16.to_le_bytes()); bytes[24..32].copy_from_slice(&0x401000u64.to_le_bytes()); bytes[32..40].copy_from_slice(&64u64.to_le_bytes()); bytes[54..56].copy_from_slice(&56u16.to_le_bytes()); bytes[56..58].copy_from_slice(&1u16.to_le_bytes());
+        let p=64usize; bytes[p..p+4].copy_from_slice(&1u32.to_le_bytes()); bytes[p+4..p+8].copy_from_slice(&5u32.to_le_bytes()); bytes[p+16..p+24].copy_from_slice(&0x401000u64.to_le_bytes()); bytes[p+32..p+40].copy_from_slice(&16u64.to_le_bytes()); bytes[p+40..p+48].copy_from_slice(&0x1000u64.to_le_bytes());
+        let parsed=ElfImage::parse(&bytes).unwrap(); let spec=AddressSpaceSpec::new(id); let plan=LoadPlan::build(spec,parsed).unwrap(); ProcessImage::build(spec,plan,UserStackPlan::build().unwrap()).unwrap()
     }
 
     fn launch(id: AddressSpaceId) -> crate::arch::x86_64::user_launch::PreparedUserLaunch {
-        let root = AddressSpaceRoot::from_physical_address(0x1234_5000).unwrap();
-        let stack = user_stack_range().unwrap();
-        prepare_launch(root, UserLaunchPlan { address_space: id, entry: crate::memory::USER_SPACE_START + 0x1000, stack_pointer: stack.end() }).unwrap()
+        let root=AddressSpaceRoot::from_physical_address(0x1234_5000).unwrap(); let stack=user_stack_range().unwrap(); prepare_launch(root,UserLaunchPlan { address_space:id, entry:crate::memory::USER_SPACE_START+0x1000, stack_pointer:stack.end() }).unwrap()
     }
 
     #[test]
     fn user_ready_transaction_stops_before_running() {
-        let mut system = SystemRuntime::new();
-        let id = AddressSpaceId::new(7).unwrap();
-        let (process, task) = system.spawn_user_ready(image(id), launch(id), Priority::DEFAULT).unwrap();
-        assert_eq!(system.processes().state(process), Ok(ProcessState::Ready));
-        assert_eq!(system.runtime().manager().scheduler.state(task), Some(TaskState::Ready));
-        assert_eq!(system.current_process(), None);
-        assert_eq!(system.current_user_binding().map(|binding| binding.task()), None);
+        let mut system=SystemRuntime::new(); let id=AddressSpaceId::new(7).unwrap(); let (process,task)=system.spawn_user_ready(image(id),launch(id),Priority::DEFAULT).unwrap();
+        assert_eq!(system.processes().state(process),Ok(ProcessState::Ready)); assert_eq!(system.runtime().manager().scheduler.state(task),Some(TaskState::Ready)); assert_eq!(system.current_process(),None); assert_eq!(system.current_user_binding(),None);
     }
 }
