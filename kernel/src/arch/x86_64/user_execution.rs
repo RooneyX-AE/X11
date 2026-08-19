@@ -4,8 +4,7 @@
 //! `Context` used by voluntary kernel switches. A ring3 launch owns an
 //! `iretq` return frame and an address-space identity instead.
 
-use crate::memory::AddressSpaceId;
-use crate::process::ProcessId;
+use crate::process::{AddressSpaceId, ProcessId};
 use crate::scheduler::TaskId;
 
 use super::user_launch::PreparedUserLaunch;
@@ -30,7 +29,7 @@ impl UserExecutionBinding {
         address_space: AddressSpaceId,
         launch: PreparedUserLaunch,
     ) -> Result<Self, UserExecutionBindingError> {
-        if launch.root().id() != address_space {
+        if launch.address_space() != address_space {
             return Err(UserExecutionBindingError::AddressSpaceMismatch);
         }
         Ok(Self { process, task, address_space, launch })
@@ -47,15 +46,15 @@ mod tests {
     use super::{UserExecutionBinding, UserExecutionBindingError};
     use crate::arch::x86_64::address_space::AddressSpaceRoot;
     use crate::arch::x86_64::user_launch::prepare_launch;
-    use crate::memory::{user_stack_range, AddressSpaceId, USER_SPACE_START};
-    use crate::process::{ProcessId, UserLaunchPlan};
+    use crate::memory::{user_stack_range, USER_SPACE_START};
+    use crate::process::{AddressSpaceId, ProcessId, UserLaunchPlan};
     use crate::scheduler::TaskId;
 
     fn launch() -> (AddressSpaceId, super::PreparedUserLaunch) {
         let id = AddressSpaceId::new(7).unwrap();
         let root = AddressSpaceRoot::from_physical_address(0x1234_5000).unwrap();
         let stack = user_stack_range().unwrap();
-        let plan = UserLaunchPlan { entry: USER_SPACE_START + 0x1000, stack_pointer: stack.end() };
+        let plan = UserLaunchPlan { address_space: id, entry: USER_SPACE_START + 0x1000, stack_pointer: stack.end() };
         (id, prepare_launch(root, plan).unwrap())
     }
 
