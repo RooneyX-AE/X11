@@ -66,8 +66,7 @@ impl CpuLocalState {
     }
 
     /// Binds the unified system runtime that owns process + scheduler + user
-    /// execution state. This is intentionally separate from `bind_runtime`
-    /// until the existing timer/preemption path is migrated.
+    /// execution state.
     ///
     /// # Safety
     /// The pointer must remain valid for the lifetime of the CPU binding.
