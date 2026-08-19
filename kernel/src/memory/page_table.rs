@@ -2,6 +2,7 @@
 
 use super::address_space::VirtRange;
 use super::page::Page4K;
+use super::region::PhysRange;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MappingError {
@@ -54,6 +55,7 @@ impl PageAccess {
 pub trait PageTableMapper {
     type Flush: MappingFlush;
 
+    fn allocate_frame(&mut self) -> Option<PhysRange>;
     fn map_page(&mut self, page: Page4K, physical_address: u64, flags: MappingFlags) -> MapResult<Self::Flush>;
     fn unmap_page(&mut self, page: Page4K) -> MapResult<(u64, Self::Flush)>;
     fn translate(&self, virtual_address: u64) -> Option<u64>;
