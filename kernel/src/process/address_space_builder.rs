@@ -14,7 +14,10 @@ pub enum AddressSpaceBuildError {
     Image(LoadError),
     StackMappingFailed,
     EntryUnmapped,
+    EntryNotExecutable,
     StackUnmapped,
+    StackNotWritable,
+    StackExecutable,
     InvalidStackPage,
     RollbackFailed,
 }
@@ -31,12 +34,18 @@ pub struct BuiltAddressSpace {
     load: LoadResult,
     stack_pages: [Option<MappedStackPage>; crate::memory::USER_STACK_PAGES as usize],
     stack_count: usize,
+    entry_executable: bool,
+    stack_writable: bool,
+    stack_executable: bool,
 }
 
 impl BuiltAddressSpace {
     pub const fn image(self) -> ProcessImage { self.image }
     pub const fn load(self) -> LoadResult { self.load }
     pub const fn stack_count(self) -> usize { self.stack_count }
+    pub const fn entry_executable(self) -> bool { self.entry_executable }
+    pub const fn stack_writable(self) -> bool { self.stack_writable }
+    pub const fn stack_executable(self) -> bool { self.stack_executable }
     pub fn stack_page(self, index: usize) -> Option<MappedStackPage> {
         if index >= self.stack_count { None } else { self.stack_pages[index] }
     }
@@ -80,20 +89,45 @@ pub fn build_address_space<M: PageTableMapper>(
         stack_count += 1;
     }
 
-    if mapper.translate(load.entry()).is_none() {
+    let entry_access = mapper.page_access(load.entry());
+    if !entry_access.mapped || !entry_access.user {
         rollback_stack(mapper, &stack_pages, stack_count)?;
         rollback_load(mapper, load)?;
         return Err(AddressSpaceBuildError::EntryUnmapped);
     }
+    if !entry_access.executable {
+        rollback_stack(mapper, &stack_pages, stack_count)?;
+        rollback_load(mapper, load)?;
+        return Err(AddressSpaceBuildError::EntryNotExecutable);
+    }
 
     let stack_top_minus_one = stack.initial_rsp().checked_sub(1).ok_or(AddressSpaceBuildError::StackUnmapped)?;
-    if mapper.translate(stack_top_minus_one).is_none() {
+    let stack_access = mapper.page_access(stack_top_minus_one);
+    if !stack_access.mapped || !stack_access.user {
         rollback_stack(mapper, &stack_pages, stack_count)?;
         rollback_load(mapper, load)?;
         return Err(AddressSpaceBuildError::StackUnmapped);
     }
+    if !stack_access.writable {
+        rollback_stack(mapper, &stack_pages, stack_count)?;
+        rollback_load(mapper, load)?;
+        return Err(AddressSpaceBuildError::StackNotWritable);
+    }
+    if stack_access.executable {
+        rollback_stack(mapper, &stack_pages, stack_count)?;
+        rollback_load(mapper, load)?;
+        return Err(AddressSpaceBuildError::StackExecutable);
+    }
 
-    Ok(BuiltAddressSpace { image, load, stack_pages, stack_count })
+    Ok(BuiltAddressSpace {
+        image,
+        load,
+        stack_pages,
+        stack_count,
+        entry_executable: entry_access.executable,
+        stack_writable: stack_access.writable,
+        stack_executable: stack_access.executable,
+    })
 }
 
 fn rollback_load<M: PageTableMapper>(mapper: &mut M, load: LoadResult) -> Result<(), AddressSpaceBuildError> {
