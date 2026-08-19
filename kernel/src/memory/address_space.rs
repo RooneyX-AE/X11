@@ -3,21 +3,13 @@
 //! This module owns policy only. Page-table mutation belongs to the mapper
 //! backend, while process lifecycle belongs to the scheduler/process layer.
 
-/// Lowest canonical user-space virtual address used by X11-OS.
 pub const USER_SPACE_START: u64 = 0x0000_0000_0001_0000;
-/// First virtual address reserved for the kernel half.
 pub const KERNEL_SPACE_START: u64 = 0xffff_8000_0000_0000;
-
-/// User stack size: 16 4 KiB pages.
 pub const USER_STACK_SIZE: u64 = 16 * 4096;
-/// One unmapped guard page below the stack.
 pub const USER_STACK_GUARD_SIZE: u64 = 4096;
-/// Initial user stack top, below the canonical kernel boundary.
 pub const USER_STACK_TOP: u64 = KERNEL_SPACE_START - 0x10_0000;
-/// Default low address used as an ELF image base for position-independent layouts.
 pub const USER_IMAGE_BASE: u64 = USER_SPACE_START + 0x10_0000;
 
-/// A validated virtual-address range with half-open semantics: `[start, end)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VirtRange { start: u64, end: u64 }
 
@@ -28,12 +20,12 @@ impl VirtRange {
     pub const fn start(self) -> u64 { self.start }
     pub const fn end(self) -> u64 { self.end }
     pub const fn len(self) -> u64 { self.end - self.start }
+    pub const fn is_empty(self) -> bool { self.start == self.end }
     pub const fn contains(self, address: u64) -> bool { address >= self.start && address < self.end }
     pub const fn is_user(self) -> bool { self.start >= USER_SPACE_START && self.end <= KERNEL_SPACE_START }
     pub const fn is_kernel(self) -> bool { self.start >= KERNEL_SPACE_START }
 }
 
-/// Immutable layout contract for a future user address space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UserAddressSpaceLayout {
     user: VirtRange,
@@ -53,14 +45,11 @@ impl UserAddressSpaceLayout {
             image_base: USER_IMAGE_BASE,
         }
     }
-
     pub const fn user_range(self) -> VirtRange { self.user }
     pub const fn stack_range(self) -> VirtRange { self.stack }
     pub const fn guard_range(self) -> VirtRange { self.guard }
     pub const fn image_base(self) -> u64 { self.image_base }
     pub const fn stack_top(self) -> u64 { self.stack.end }
-
-    /// True only when an address belongs to mapped stack bytes, not its guard page.
     pub const fn is_stack_address(self, address: u64) -> bool { self.stack.contains(address) }
     pub const fn is_guard_address(self, address: u64) -> bool { self.guard.contains(address) }
 }
@@ -71,21 +60,18 @@ mod tests {
 
     #[test]
     fn rejects_inverted_range() { assert_eq!(VirtRange::new(2, 1), None); }
-
     #[test]
     fn recognizes_user_range() {
         let range = VirtRange::new(USER_SPACE_START, USER_SPACE_START + 0x4000).unwrap();
         assert!(range.is_user());
         assert!(!range.is_kernel());
     }
-
     #[test]
     fn recognizes_kernel_range() {
         let range = VirtRange::new(KERNEL_SPACE_START, KERNEL_SPACE_START + 0x4000).unwrap();
         assert!(range.is_kernel());
         assert!(!range.is_user());
     }
-
     #[test]
     fn default_user_layout_is_disjoint() {
         let layout = UserAddressSpaceLayout::default();
@@ -98,7 +84,6 @@ mod tests {
         assert_eq!(layout.stack_range().len(), 16 * 4096);
         assert_eq!(layout.guard_range().len(), 4096);
     }
-
     #[test]
     fn stack_is_below_kernel_boundary() {
         let layout = UserAddressSpaceLayout::default();
