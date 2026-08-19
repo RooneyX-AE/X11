@@ -10,13 +10,13 @@ pub struct TaskId {
 }
 
 impl TaskId {
-    pub const fn new(index: u32, generation: u32) -> Self {
-        Self { index, generation }
-    }
-
+    pub const fn new(index: u32, generation: u32) -> Self { Self { index, generation } }
     pub const fn index(self) -> u32 { self.index }
     pub const fn generation(self) -> u32 { self.generation }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskKind { Kernel, Userspace }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskState { Created, Ready, Running, Blocked, Exited }
@@ -38,6 +38,7 @@ pub enum ExecutionAttachError { AlreadyAttached }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskControlBlock {
     id: TaskId,
+    kind: TaskKind,
     state: TaskState,
     priority: Priority,
     execution: Option<ExecutionHandle>,
@@ -45,9 +46,15 @@ pub struct TaskControlBlock {
 
 impl TaskControlBlock {
     pub const fn new(id: TaskId, priority: Priority) -> Self {
-        Self { id, state: TaskState::Created, priority, execution: None }
+        Self { id, kind: TaskKind::Kernel, state: TaskState::Created, priority, execution: None }
     }
+
+    pub const fn new_userspace(id: TaskId, priority: Priority) -> Self {
+        Self { id, kind: TaskKind::Userspace, state: TaskState::Created, priority, execution: None }
+    }
+
     pub const fn id(&self) -> TaskId { self.id }
+    pub const fn kind(&self) -> TaskKind { self.kind }
     pub const fn state(&self) -> TaskState { self.state }
     pub const fn priority(&self) -> Priority { self.priority }
     pub const fn execution(&self) -> Option<ExecutionHandle> { self.execution }
@@ -81,7 +88,7 @@ impl TaskControlBlock {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionAttachError, Priority, TaskControlBlock, TaskId, TaskState};
+    use super::{ExecutionAttachError, Priority, TaskControlBlock, TaskId, TaskKind, TaskState};
 
     #[test]
     fn task_state_machine_rejects_illegal_transition() {
@@ -107,5 +114,12 @@ mod tests {
         let handle = task.attach_execution().unwrap();
         assert_eq!(task.execution(), Some(handle));
         assert_eq!(task.attach_execution(), Err(ExecutionAttachError::AlreadyAttached));
+    }
+
+    #[test]
+    fn userspace_task_has_explicit_kind_and_no_kernel_execution_assumption() {
+        let task = TaskControlBlock::new_userspace(TaskId::new(8, 1), Priority::DEFAULT);
+        assert_eq!(task.kind(), TaskKind::Userspace);
+        assert!(task.execution().is_none());
     }
 }
