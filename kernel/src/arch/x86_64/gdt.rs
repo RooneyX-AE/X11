@@ -16,8 +16,8 @@ const DOUBLE_FAULT_STACK_SIZE: usize = 32 * 1024;
 ///
 /// The descriptor order below is intentionally stable:
 ///   0: kernel code, 1: kernel data, 2: user data, 3: user code, 4: TSS.
-pub const USER_DATA_SELECTOR: u16 = 0x1b;
-pub const USER_CODE_SELECTOR: u16 = 0x23;
+pub const USER_DATA_SELECTOR: u16 = 0x13;
+pub const USER_CODE_SELECTOR: u16 = 0x1b;
 
 #[repr(align(16))]
 struct AlignedStack([u8; DOUBLE_FAULT_STACK_SIZE]);
@@ -101,8 +101,8 @@ mod tests {
 
     #[test]
     fn ring3_selector_contract_is_stable() {
-        assert_eq!(USER_DATA_SELECTOR, 0x1b);
-        assert_eq!(USER_CODE_SELECTOR, 0x23);
+        assert_eq!(USER_DATA_SELECTOR, 0x13);
+        assert_eq!(USER_CODE_SELECTOR, 0x1b);
         assert_eq!(USER_DATA_SELECTOR & 3, 3);
         assert_eq!(USER_CODE_SELECTOR & 3, 3);
     }
