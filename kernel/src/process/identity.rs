@@ -1,6 +1,6 @@
 //! Stable process identity and execution binding.
 
-use crate::memory::AddressSpaceId;
+use super::AddressSpaceId;
 use crate::scheduler::{ExecutionHandle, TaskId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
