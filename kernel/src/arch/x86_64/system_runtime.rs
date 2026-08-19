@@ -9,6 +9,8 @@ use crate::syscall::{ProcessSyscallControl, SyscallError};
 use super::runtime::{KernelRuntime, RuntimeError};
 use super::user_execution::{UserExecutionBinding, UserExecutionRegistry, UserExecutionRegistryError};
 use super::user_launch::PreparedUserLaunch;
+use super::user_successor::{select_userspace_successor, UserSuccessorError};
+use super::user_return_transfer::UserReturnTransfer;
 
 #[derive(Debug)]
 pub struct SystemRuntime {
@@ -28,6 +30,7 @@ pub enum SystemRuntimeError {
     NoCurrentProcess,
     TaskBindingMismatch,
     SchedulerTaskNotReady,
+    Successor(UserSuccessorError),
 }
 
 impl From<crate::process::ProcessManagerError> for SystemRuntimeError {
@@ -154,6 +157,34 @@ impl SystemRuntime {
         self.pending_exit.take()
     }
 
+    pub fn commit_pending_exit(&mut self) -> Result<UserReturnTransfer, SystemRuntimeError> {
+        let (process, task, _code) = self.pending_exit.ok_or(SystemRuntimeError::NoCurrentProcess)?;
+        let current_task = self.runtime.manager().scheduler.current();
+        if self.current_process != Some(process) || current_task != Some(task) {
+            return Err(SystemRuntimeError::TaskBindingMismatch);
+        }
+
+        let successor = select_userspace_successor(self, Some(task)).map_err(SystemRuntimeError::Successor)?;
+        let current_binding = self.processes.binding(process).map_err(SystemRuntimeError::Process)?
+            .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        if current_binding.task() != task || self.processes.state(process).map_err(SystemRuntimeError::Process)? != ProcessState::Running {
+            return Err(SystemRuntimeError::TaskBindingMismatch);
+        }
+
+        self.processes.start(successor.process()).map_err(SystemRuntimeError::Process)?;
+        self.processes.exit(process).map_err(SystemRuntimeError::Process)?;
+        self.runtime.manager_mut().scheduler.terminate_current_to(successor.task())
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        let _ = self.userspace.remove(task).map_err(SystemRuntimeError::UserBinding)?;
+        self.current_process = Some(successor.process());
+        self.pending_exit = None;
+        unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
+
+        let transfer = UserReturnTransfer::new(successor.binding()).validate(None)
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        Ok(transfer)
+    }
+
     fn current_binding_checked(&self) -> Result<UserExecutionBinding, SyscallError> {
         if self.pending_exit.is_some() { return Err(SyscallError::InvalidArguments); }
         let process = self.current_process.ok_or(SyscallError::InvalidArguments)?;
@@ -209,14 +240,5 @@ mod tests {
     fn user_ready_transaction_stops_before_running() {
         let mut system=SystemRuntime::new(); let id=AddressSpaceId::new(7).unwrap(); let (process,task)=system.spawn_user_ready(image(id),launch(id),Priority::DEFAULT).unwrap();
         assert_eq!(system.processes().state(process),Ok(ProcessState::Ready)); assert_eq!(system.runtime().manager().scheduler.state(task),Some(TaskState::Ready)); assert_eq!(system.current_process(),None); assert_eq!(system.current_user_binding(),None); assert_eq!(system.pending_exit(),None);
-    }
-
-    #[test]
-    fn exit_pending_does_not_destroy_process() {
-        let mut system=SystemRuntime::new();
-        let process=crate::process::ProcessId::new(1,1);
-        assert!(system.current_process().is_none());
-        assert_eq!(system.pending_exit(), None);
-        let _ = process;
     }
 }
