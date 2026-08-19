@@ -5,7 +5,9 @@ use bootloader_api::{info::Optional, BootInfo};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RamdiskError {
     Missing,
+    Empty,
     LengthOverflow,
+    AddressOverflow,
 }
 
 pub fn bytes(boot_info: &'static BootInfo) -> Result<&'static [u8], RamdiskError> {
@@ -15,6 +17,12 @@ pub fn bytes(boot_info: &'static BootInfo) -> Result<&'static [u8], RamdiskError
     };
 
     let length = usize::try_from(boot_info.ramdisk_len).map_err(|_| RamdiskError::LengthOverflow)?;
+    if length == 0 {
+        return Err(RamdiskError::Empty);
+    }
+    let _end = address
+        .checked_add(length as u64)
+        .ok_or(RamdiskError::AddressOverflow)?;
     let start = address as *const u8;
 
     // SAFETY: bootloader_api maps the ramdisk into the kernel address space and
@@ -30,5 +38,6 @@ mod tests {
     #[test]
     fn error_contract_is_distinct() {
         assert_ne!(RamdiskError::Missing, RamdiskError::LengthOverflow);
+        assert_ne!(RamdiskError::Empty, RamdiskError::AddressOverflow);
     }
 }
