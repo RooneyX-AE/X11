@@ -66,8 +66,21 @@ extern "C" fn syscall_entry_rust(registers: *mut SavedRegisters, return_frame: *
 
     let success = dispatch.result.is_ok();
     registers.rax = syscall_result_abi_value(dispatch.result);
-    unsafe { crate::arch::x86_64::cpu_local::local().publish_syscall_action(dispatch.action); }
     crate::arch::x86_64::idt::record_user_trap(success);
+
+    match dispatch.action {
+        crate::syscall::SyscallReturnAction::Terminate => {
+            let Some(system_ptr) = crate::arch::x86_64::cpu_local::local().system_runtime_ptr() else { return; };
+            let system = unsafe { &mut *(system_ptr as *mut crate::arch::x86_64::system_runtime::SystemRuntime) };
+            match system.commit_pending_exit() {
+                Ok(transfer) => unsafe { crate::arch::x86_64::user_transfer::execute_user_transfer(transfer) },
+                Err(_) => return,
+            }
+        }
+        crate::syscall::SyscallReturnAction::Return | crate::syscall::SyscallReturnAction::Reschedule => {
+            unsafe { crate::arch::x86_64::cpu_local::local().publish_syscall_action(dispatch.action); }
+        }
+    }
 }
 
 #[unsafe(naked)]
