@@ -190,3 +190,4 @@ mod tests {
         assert_eq!(map_to_error(MapToError::ParentEntryHugePage), MappingError::ParentEntryHugePage);
         assert_eq!(map_to_error(MapToError::PageAlreadyMapped(x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(0x1000)))), MappingError::AlreadyMapped);
     }
+}
