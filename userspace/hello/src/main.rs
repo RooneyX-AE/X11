@@ -8,6 +8,7 @@ use core::panic::PanicInfo;
 pub extern "C" fn _start() -> ! {
     unsafe {
         asm!("int 0x80", options(nomem, nostack, preserves_flags));
+        asm!("int 0x80", options(nomem, nostack, preserves_flags));
     }
 
     loop {
