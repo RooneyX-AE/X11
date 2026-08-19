@@ -40,7 +40,7 @@ impl LoadPlan {
     pub fn build(address_space: AddressSpaceSpec, image: ElfImage<'_>) -> Result<Self, LoadPlanError> {
         if image.segment_count() > 8 { return Err(LoadPlanError::TooManySegments); }
 
-        let mut segments = [None; 8];
+        let mut segments: [Option<SegmentMapping>; 8] = [None; 8];
         let mut count = 0;
         let mut entry_executable = false;
 
