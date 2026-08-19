@@ -1,4 +1,4 @@
-//! x86_64 interrupt-entry register frame.
+//! x86_64 interrupt-entry register frames.
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -21,53 +21,26 @@ pub struct SavedRegisters {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InterruptReturnFrame {
-    raw: *mut u64,
-}
+pub struct InterruptReturnFrame { raw: *mut u64 }
 
 impl InterruptReturnFrame {
-    pub const unsafe fn from_raw(raw: *mut u64) -> Self {
-        Self { raw }
-    }
-
-    pub unsafe fn rip(self) -> u64 {
-        unsafe { *self.raw.add(0) }
-    }
-
-    pub unsafe fn cs(self) -> u64 {
-        unsafe { *self.raw.add(1) }
-    }
-
-    pub unsafe fn rflags(self) -> u64 {
-        unsafe { *self.raw.add(2) }
-    }
-
+    pub const unsafe fn from_raw(raw: *mut u64) -> Self { Self { raw } }
+    pub unsafe fn rip(self) -> u64 { unsafe { *self.raw.add(0) } }
+    pub unsafe fn cs(self) -> u64 { unsafe { *self.raw.add(1) } }
+    pub unsafe fn rflags(self) -> u64 { unsafe { *self.raw.add(2) } }
     pub unsafe fn rsp(self) -> Option<u64> {
-        if unsafe { self.cs() } & 3 == 0 {
-            return None;
-        }
+        if unsafe { self.cs() } & 3 == 0 { return None; }
         Some(unsafe { *self.raw.add(3) })
     }
-
     pub unsafe fn ss(self) -> Option<u64> {
-        if unsafe { self.cs() } & 3 == 0 {
-            return None;
-        }
+        if unsafe { self.cs() } & 3 == 0 { return None; }
         Some(unsafe { *self.raw.add(4) })
     }
-
-    /// Returns the stack pointer that will be active after `iretq` consumes
-    /// the CPU-created return frame.
     pub fn resume_rsp(self) -> Option<u64> {
         let frame = self.raw as usize;
-        let bytes = if unsafe { self.cs() } & 3 == 0 {
-            SAME_CPL_FRAME_BYTES
-        } else {
-            CROSS_CPL_FRAME_BYTES
-        };
+        let bytes = if unsafe { self.cs() } & 3 == 0 { SAME_CPL_FRAME_BYTES } else { CROSS_CPL_FRAME_BYTES };
         frame.checked_add(bytes).map(|value| value as u64)
     }
-
     pub unsafe fn is_kernel_return(self) -> bool {
         unsafe { self.rip() != 0 && self.cs() & 3 == 0 && self.rflags() & 2 != 0 }
     }
@@ -81,47 +54,51 @@ const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
 #[inline(never)]
+extern "C" fn syscall_entry_rust(registers: *mut SavedRegisters, return_frame: *mut u64) {
+    let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
+    if unsafe { frame.cs() } & 3 != 3 { return; }
+    let registers = unsafe { &*registers };
+    let request = crate::syscall::SyscallRequest::new(
+        registers.rax,
+        registers.rdi,
+        registers.rsi,
+        registers.rdx,
+    );
+    let result = crate::syscall::dispatch(request);
+    crate::arch::x86_64::idt::record_user_trap(result.is_ok());
+}
+
+/// User-callable `int 0x80` entry. The register ABI is:
+/// `rax = syscall number`, `rdi = arg0`, `rsi = arg1`, `rdx = arg2`.
+#[unsafe(naked)]
+pub unsafe extern "C" fn syscall_entry() {
+    core::arch::naked_asm!(
+        "push r15", "push r14", "push r13", "push r12", "push r11", "push r10", "push r9", "push r8",
+        "push rdi", "push rsi", "push rbp", "push rbx", "push rdx", "push rcx", "push rax",
+        "mov rax, rsp", "and rsp, -16", "sub rsp, 16", "mov [rsp], rax",
+        "mov rdi, rax", "lea rsi, [rax + 120]", "call {rust_hook}",
+        "mov rax, [rsp]", "mov rsp, rax",
+        "pop rax", "pop rcx", "pop rdx", "pop rbx", "pop rbp", "pop rsi", "pop rdi",
+        "pop r8", "pop r9", "pop r10", "pop r11", "pop r12", "pop r13", "pop r14", "pop r15",
+        "iretq",
+        rust_hook = sym syscall_entry_rust,
+    );
+}
+
+#[inline(never)]
 extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mut u64) {
     let frame = unsafe { InterruptReturnFrame::from_raw(return_frame) };
-    let Some(resume_rsp) = frame.resume_rsp() else {
-        return;
-    };
-    let capture_result = unsafe {
-        crate::arch::x86_64::cpu_local::local().capture_interrupted(
-            registers,
-            frame,
-            resume_rsp,
-        )
-    };
+    let Some(resume_rsp) = frame.resume_rsp() else { return; };
+    let capture_result = unsafe { crate::arch::x86_64::cpu_local::local().capture_interrupted(registers, frame, resume_rsp) };
     crate::arch::x86_64::idt::record_timer_interrupt();
-
-    // Never switch away from the interrupted task unless its CPU state was
-    // successfully captured. A failed capture can mean there is no current
-    // task, a snapshot is already pending, or the frame is invalid; in all
-    // cases returning through the original iret path is safer than losing the
-    // current execution state.
-    if capture_result.is_err() {
-        return;
-    }
-
-    let Some(runtime_ptr) = crate::arch::x86_64::cpu_local::local().runtime_ptr() else {
-        return;
-    };
-    let outcome = unsafe {
-        (&mut *(runtime_ptr as *mut crate::arch::x86_64::runtime::KernelRuntime))
-            .handle_timer_preemption()
-    };
-
+    if capture_result.is_err() { return; }
+    let Some(runtime_ptr) = crate::arch::x86_64::cpu_local::local().runtime_ptr() else { return; };
+    let outcome = unsafe { (&mut *(runtime_ptr as *mut crate::arch::x86_64::runtime::KernelRuntime)).handle_timer_preemption() };
     match outcome {
-        Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToContext(context)) =>
-            unsafe {
-                crate::arch::x86_64::preempt_return::return_to_context(&context);
-            },
+        Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToContext(context)) => unsafe { crate::arch::x86_64::preempt_return::return_to_context(&context); },
         Ok(crate::arch::x86_64::runtime::InterruptPreemption::ReturnToKernel(state)) => {
             crate::PREEMPT_IRET_RETURNED.store(true, core::sync::atomic::Ordering::Release);
-            unsafe {
-                crate::arch::x86_64::preempt_return::return_to_kernel(&state);
-            }
+            unsafe { crate::arch::x86_64::preempt_return::return_to_kernel(&state); }
         }
         Ok(crate::arch::x86_64::runtime::InterruptPreemption::ResumeCurrent) | Err(_) => {}
     }
@@ -130,45 +107,13 @@ extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mu
 #[unsafe(naked)]
 pub unsafe extern "C" fn timer_entry() {
     core::arch::naked_asm!(
-        "push r15",
-        "push r14",
-        "push r13",
-        "push r12",
-        "push r11",
-        "push r10",
-        "push r9",
-        "push r8",
-        "push rdi",
-        "push rsi",
-        "push rbp",
-        "push rbx",
-        "push rdx",
-        "push rcx",
-        "push rax",
-        "mov rax, rsp",
-        "and rsp, -16",
-        "sub rsp, 16",
-        "mov [rsp], rax",
-        "mov rdi, rax",
-        "lea rsi, [rax + 120]",
-        "call {rust_hook}",
-        "mov rax, [rsp]",
-        "mov rsp, rax",
-        "pop rax",
-        "pop rcx",
-        "pop rdx",
-        "pop rbx",
-        "pop rbp",
-        "pop rsi",
-        "pop rdi",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
+        "push r15", "push r14", "push r13", "push r12", "push r11", "push r10", "push r9", "push r8",
+        "push rdi", "push rsi", "push rbp", "push rbx", "push rdx", "push rcx", "push rax",
+        "mov rax, rsp", "and rsp, -16", "sub rsp, 16", "mov [rsp], rax",
+        "mov rdi, rax", "lea rsi, [rax + 120]", "call {rust_hook}",
+        "mov rax, [rsp]", "mov rsp, rax",
+        "pop rax", "pop rcx", "pop rdx", "pop rbx", "pop rbp", "pop rsi", "pop rdi",
+        "pop r8", "pop r9", "pop r10", "pop r11", "pop r12", "pop r13", "pop r14", "pop r15",
         "iretq",
         rust_hook = sym timer_entry_rust,
     );
@@ -176,55 +121,24 @@ pub unsafe extern "C" fn timer_entry() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        InterruptReturnFrame,
-        SavedRegisters,
-        CROSS_CPL_FRAME_BYTES,
-        GPR_BYTES,
-        SAME_CPL_FRAME_BYTES,
-    };
+    use super::{InterruptReturnFrame, SavedRegisters, CROSS_CPL_FRAME_BYTES, GPR_BYTES, SAME_CPL_FRAME_BYTES};
     use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
     #[test]
-    fn saved_register_layout_is_exact() {
-        assert_eq!(core::mem::size_of::<SavedRegisters>(), 120);
-        assert_eq!(GPR_BYTES, 120);
-    }
-
+    fn saved_register_layout_is_exact() { assert_eq!(core::mem::size_of::<SavedRegisters>(), 120); assert_eq!(GPR_BYTES, 120); }
     #[test]
-    fn return_frame_sizes_match_same_and_cross_cpl() {
-        assert_eq!(SAME_CPL_FRAME_BYTES, 24);
-        assert_eq!(CROSS_CPL_FRAME_BYTES, 40);
-    }
-
+    fn return_frame_sizes_match_same_and_cross_cpl() { assert_eq!(SAME_CPL_FRAME_BYTES, 24); assert_eq!(CROSS_CPL_FRAME_BYTES, 40); }
     #[test]
     fn kernel_return_frame_does_not_read_rsp_or_ss() {
-        let mut raw = [0u64; 5];
-        raw[0] = 0x1000;
-        raw[1] = 0x10;
-        raw[2] = 0x202;
-        raw[3] = 0xDEAD;
-        raw[4] = 0xBEEF;
+        let mut raw = [0u64; 5]; raw[0] = 0x1000; raw[1] = 0x10; raw[2] = 0x202; raw[3] = 0xDEAD; raw[4] = 0xBEEF;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        assert!(unsafe { frame.is_kernel_return() });
-        assert_eq!(unsafe { frame.rsp() }, None);
-        assert_eq!(unsafe { frame.ss() }, None);
-        let raw_address = raw.as_mut_ptr() as usize as u64;
-        assert_eq!(frame.resume_rsp(), Some(raw_address + 24));
+        assert!(unsafe { frame.is_kernel_return() }); assert_eq!(unsafe { frame.rsp() }, None); assert_eq!(unsafe { frame.ss() }, None);
+        let raw_address = raw.as_mut_ptr() as usize as u64; assert_eq!(frame.resume_rsp(), Some(raw_address + 24));
     }
-
     #[test]
     fn user_return_frame_reads_rsp_and_ss() {
-        let mut raw = [0u64; 5];
-        raw[0] = 0x1000;
-        raw[1] = USER_CODE_SELECTOR as u64;
-        raw[2] = 0x202;
-        raw[3] = 0x8000;
-        raw[4] = USER_DATA_SELECTOR as u64;
+        let mut raw = [0u64; 5]; raw[0] = 0x1000; raw[1] = USER_CODE_SELECTOR as u64; raw[2] = 0x202; raw[3] = 0x8000; raw[4] = USER_DATA_SELECTOR as u64;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        assert!(!unsafe { frame.is_kernel_return() });
-        assert_eq!(unsafe { frame.rsp() }, Some(0x8000));
-        assert_eq!(unsafe { frame.ss() }, Some(USER_DATA_SELECTOR as u64));
-        assert_eq!(frame.resume_rsp(), Some(0x8000));
+        assert!(!unsafe { frame.is_kernel_return() }); assert_eq!(unsafe { frame.rsp() }, Some(0x8000)); assert_eq!(unsafe { frame.ss() }, Some(USER_DATA_SELECTOR as u64)); assert_eq!(frame.resume_rsp(), Some(0x8000));
     }
 }
