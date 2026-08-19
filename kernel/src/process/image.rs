@@ -26,6 +26,7 @@ pub enum ElfError {
     UnsupportedMachine,
     InvalidProgramTable,
     InvalidSegmentRange,
+    InvalidSegmentPermissions,
     InvalidEntry,
 }
 
@@ -96,6 +97,9 @@ impl<'a> ElfImage<'a> {
             let file_size = read_u64(bytes, base + 32).ok_or(ElfError::InvalidSegmentRange)?;
             let memory_size = read_u64(bytes, base + 40).ok_or(ElfError::InvalidSegmentRange)?;
 
+            if flags & PF_W != 0 && flags & PF_X != 0 {
+                return Err(ElfError::InvalidSegmentPermissions);
+            }
             if memory_size < file_size { return Err(ElfError::InvalidSegmentRange); }
             let file_end = file_offset.checked_add(file_size).ok_or(ElfError::InvalidSegmentRange)?;
             if file_end > bytes.len() as u64 { return Err(ElfError::InvalidSegmentRange); }
@@ -192,5 +196,12 @@ mod tests {
         let mut bytes = minimal_elf();
         bytes[32..40].copy_from_slice(&80u64.to_le_bytes());
         assert_eq!(ElfImage::parse(&bytes), Err(ElfError::InvalidSegmentRange));
+    }
+
+    #[test]
+    fn rejects_writable_executable_segment() {
+        let mut bytes = minimal_elf();
+        bytes[68..72].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(ElfImage::parse(&bytes), Err(ElfError::InvalidSegmentPermissions));
     }
 }
