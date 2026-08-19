@@ -115,14 +115,18 @@ jobs:
               position = next_position
 
           trap_marker = "X11-OS: userspace int 0x80 trap reached"
-          if log.count(trap_marker) != 2:
-              raise SystemExit(f"expected exactly two userspace trap markers, found {log.count(trap_marker)}")
+          if log.count(trap_marker) != 3:
+              raise SystemExit(f"expected exactly three userspace trap markers, found {log.count(trap_marker)}")
 
           write_marker = "Hello from X11-OS userspace!"
           if log.count(write_marker) != 2:
               raise SystemExit(f"expected exactly two userspace write outputs, found {log.count(write_marker)}")
 
-          print("QEMU evidence: CPL3 userspace executed Write twice, both traps returned to userspace, and serial output matched the userspace buffer")
+          abi_marker = "X11-OS: syscall ABI return contract verified"
+          if log.count(abi_marker) != 1:
+              raise SystemExit(f"expected exactly one syscall ABI verification marker, found {log.count(abi_marker)}")
+
+          print("QEMU evidence: CPL3 userspace executed Write twice, validated success and error RAX ABI, and returned to userspace after every trap")
           PY
       - name: Upload diagnostics
         if: always()
