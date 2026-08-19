@@ -61,7 +61,7 @@ pub fn build_address_space<M: PageTableMapper>(
     for index in 0..stack.count() {
         let page = stack.page(index).ok_or(AddressSpaceBuildError::InvalidStackPage)?;
         let physical_address = match mapper.allocate_frame() {
-            Some(range) => range.start(),
+            Some(frame) => frame,
             None => {
                 rollback_stack(mapper, &stack_pages, stack_count)?;
                 rollback_load(mapper, load)?;
