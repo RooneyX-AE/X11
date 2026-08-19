@@ -81,13 +81,40 @@ impl ProcessManager {
         slot.state = Some(ProcessState::Running); Ok(())
     }
 
+    /// Transitions two live userspace processes for a voluntary yield.
+    ///
+    /// The current process must be Running and the successor must be Ready.
+    /// Both lifecycle states are validated before either state is changed, and
+    /// the successor transition is rolled back if it unexpectedly fails.
+    pub fn yield_to(&mut self, current: ProcessId, successor: ProcessId) -> Result<(), ProcessManagerError> {
+        if current == successor { return Err(ProcessManagerError::InvalidTransition); }
+        let current_index = current.index() as usize;
+        let successor_index = successor.index() as usize;
+        let current_slot = self.slot(current)?.state.ok_or(ProcessManagerError::InvalidProcess)?;
+        let successor_slot = self.slot(successor)?.state.ok_or(ProcessManagerError::InvalidProcess)?;
+        if current_slot != ProcessState::Running || successor_slot != ProcessState::Ready {
+            return Err(ProcessManagerError::InvalidTransition);
+        }
+        if self.slot(current)?.binding.is_none() || self.slot(successor)?.binding.is_none() {
+            return Err(ProcessManagerError::BindingMismatch);
+        }
+
+        self.slots[current_index].state = Some(ProcessState::Ready);
+        let transitioned = self.slots[successor_index].state == Some(ProcessState::Ready);
+        if !transitioned {
+            self.slots[current_index].state = Some(ProcessState::Running);
+            return Err(ProcessManagerError::InvalidTransition);
+        }
+        self.slots[successor_index].state = Some(ProcessState::Running);
+        Ok(())
+    }
+
     pub fn exit(&mut self, id: ProcessId) -> Result<(), ProcessManagerError> {
         let slot = self.slot_mut(id)?;
         if !matches!(slot.state, Some(ProcessState::Ready | ProcessState::Running)) { return Err(ProcessManagerError::InvalidTransition); }
         slot.state = Some(ProcessState::Exited); slot.image = None; slot.binding = None; Ok(())
     }
 
-    /// Permanently aborts a transaction that has not started execution.
     pub fn abort_ready(&mut self, id: ProcessId) -> Result<(), ProcessManagerError> {
         let slot = self.slot_mut(id)?;
         if slot.state != Some(ProcessState::Ready) { return Err(ProcessManagerError::InvalidTransition); }
@@ -135,4 +162,19 @@ mod tests {
     #[test] fn abort_ready_releases_transaction_slot() { let mut manager=ProcessManager::new(); let id=manager.register_ready(image()).unwrap(); manager.abort_ready(id).unwrap(); let replacement=manager.register_ready(image()).unwrap(); assert_eq!(replacement.index(),0); assert_eq!(replacement.generation(),2); }
     #[test] fn wrong_address_space_is_rejected() { let mut manager=ProcessManager::new(); let id=manager.register_ready(image()).unwrap(); let task=TaskId::new(3,1); let wrong=AddressSpaceId::new(2).unwrap(); assert_eq!(manager.attach_execution(id,task,ExecutionHandle::for_task(task),wrong),Err(ProcessManagerError::BindingMismatch)); }
     #[test] fn stale_id_cannot_touch_replacement_slot() { let mut manager=ProcessManager::new(); let old=manager.register_ready(image()).unwrap(); manager.exit(old).unwrap(); let new=manager.register_ready(image()).unwrap(); assert_eq!(old.index(),new.index()); assert_ne!(old.generation(),new.generation()); assert_eq!(manager.state(old),Err(ProcessManagerError::InvalidProcess)); assert_eq!(manager.state(new),Ok(ProcessState::Ready)); }
+
+    #[test]
+    fn yield_to_switches_running_to_ready_and_successor_to_running() {
+        let mut manager = ProcessManager::new();
+        let current = manager.register_ready(image()).unwrap();
+        let successor = manager.register_ready(image()).unwrap();
+        let current_task = TaskId::new(1, 1);
+        let successor_task = TaskId::new(2, 1);
+        manager.attach_execution(current, current_task, ExecutionHandle::for_task(current_task), AddressSpaceId::new(1).unwrap()).unwrap();
+        manager.attach_execution(successor, successor_task, ExecutionHandle::for_task(successor_task), AddressSpaceId::new(1).unwrap()).unwrap();
+        manager.start(current).unwrap();
+        assert_eq!(manager.yield_to(current, successor), Ok(()));
+        assert_eq!(manager.state(current), Ok(ProcessState::Ready));
+        assert_eq!(manager.state(successor), Ok(ProcessState::Running));
+    }
 }
