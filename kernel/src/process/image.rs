@@ -10,7 +10,6 @@ const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const ET_EXEC: u16 = 2;
-const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;
@@ -66,7 +65,7 @@ impl<'a> ElfImage<'a> {
         if bytes[5] != ELFDATA2LSB { return Err(ElfError::UnsupportedEndian); }
 
         let kind = read_u16(bytes, 16).ok_or(ElfError::TooSmall)?;
-        if kind != ET_EXEC && kind != ET_DYN { return Err(ElfError::UnsupportedType); }
+        if kind != ET_EXEC { return Err(ElfError::UnsupportedType); }
         if read_u16(bytes, 18).ok_or(ElfError::TooSmall)? != EM_X86_64 {
             return Err(ElfError::UnsupportedMachine);
         }
@@ -172,6 +171,13 @@ mod tests {
     #[test]
     fn rejects_non_elf_input() {
         assert_eq!(ElfImage::parse(b"not elf"), Err(ElfError::TooSmall));
+    }
+
+    #[test]
+    fn rejects_dynamic_elf_until_load_bias_exists() {
+        let mut bytes = minimal_elf();
+        bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(ElfImage::parse(&bytes), Err(ElfError::UnsupportedType));
     }
 
     #[test]
