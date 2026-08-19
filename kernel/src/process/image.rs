@@ -98,7 +98,7 @@ impl<'a> ElfImage<'a> {
 
             if memory_size < file_size { return Err(ElfError::InvalidSegmentRange); }
             let file_end = file_offset.checked_add(file_size).ok_or(ElfError::InvalidSegmentRange)?;
-            if file_end > bytes.len() { return Err(ElfError::InvalidSegmentRange); }
+            if file_end > bytes.len() as u64 { return Err(ElfError::InvalidSegmentRange); }
             let virtual_end = virtual_address.checked_add(memory_size).ok_or(ElfError::InvalidSegmentRange)?;
             let range = VirtRange::new(virtual_address, virtual_end).ok_or(ElfError::InvalidSegmentRange)?;
             if range.len() == 0 || !range.is_user() { return Err(ElfError::InvalidSegmentRange); }
