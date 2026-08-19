@@ -21,6 +21,7 @@ pub mod local_apic;
 pub mod preemption;
 pub mod preempt_return;
 pub mod preemption_plan;
+pub mod process_loader;
 pub mod runtime;
 pub mod tsc;
 pub mod user_activation;
