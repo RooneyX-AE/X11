@@ -106,15 +106,28 @@ extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mu
     crate::arch::x86_64::idt::record_timer_interrupt();
     if capture_result.is_err() { return; }
 
-    // The legacy kernel timer dispatcher owns only kernel execution contexts.
-    // A userspace task has a separate `iretq` binding and must never be handed
-    // to the kernel `ExecutionRegistry`. Until userspace timer rescheduling is
-    // implemented, consume the snapshot and resume the interrupted ring3 task.
     if let Some(system_ptr) = crate::arch::x86_64::cpu_local::local().system_runtime_ptr() {
-        let system = unsafe { &*(system_ptr as *mut crate::arch::x86_64::system_runtime::SystemRuntime) };
+        let system = unsafe { &mut *(system_ptr as *mut crate::arch::x86_64::system_runtime::SystemRuntime) };
         if system.current_user_binding().is_some() {
-            let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
-            return;
+            match crate::arch::x86_64::cpu_local::local().take_syscall_action() {
+                Some(crate::syscall::SyscallReturnAction::Reschedule) => {
+                    match system.commit_userspace_yield() {
+                        Ok(Some(transfer)) => {
+                            let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
+                            unsafe { crate::arch::x86_64::user_transfer::execute_user_transfer(transfer) }
+                        }
+                        Ok(None) | Err(_) => {
+                            let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
+                            return;
+                        }
+                    }
+                }
+                Some(crate::syscall::SyscallReturnAction::Return) | None => {
+                    let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
+                    return;
+                }
+                Some(crate::syscall::SyscallReturnAction::Terminate) => unreachable!("terminate action is consumed by syscall entry"),
+            }
         }
     }
 
