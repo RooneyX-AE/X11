@@ -4,11 +4,9 @@
 //! knowing the concrete architecture. It only returns a ready-to-activate
 //! description after the ELF image and user stack are mapped and verified.
 
-use crate::memory::{EarlyFrameAllocator, MappingFlags, Page4K, PageTableMapper};
+use crate::memory::{MappingFlags, Page4K, PageTableMapper};
 
-use super::{
-    map_load_plan, AddressSpaceSpec, LoadError, LoadResult, ProcessImage,
-};
+use super::{map_load_plan, AddressSpaceSpec, LoadError, LoadResult, ProcessImage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressSpaceBuildError {
@@ -46,7 +44,6 @@ impl BuiltAddressSpace {
 
 pub fn build_address_space<M: PageTableMapper>(
     mapper: &mut M,
-    allocator: &mut EarlyFrameAllocator<'_>,
     spec: AddressSpaceSpec,
     image: ProcessImage,
 ) -> Result<BuiltAddressSpace, AddressSpaceBuildError> {
@@ -54,7 +51,7 @@ pub fn build_address_space<M: PageTableMapper>(
         return Err(AddressSpaceBuildError::AddressSpaceMismatch);
     }
 
-    let load = map_load_plan(mapper, allocator, image.load_plan())
+    let load = map_load_plan(mapper, image.load_plan())
         .map_err(AddressSpaceBuildError::Image)?;
 
     let stack = image.stack_plan();
@@ -63,15 +60,14 @@ pub fn build_address_space<M: PageTableMapper>(
 
     for index in 0..stack.count() {
         let page = stack.page(index).ok_or(AddressSpaceBuildError::InvalidStackPage)?;
-        let frame = match allocator.allocate_frame() {
-            Some(frame) => frame,
+        let physical_address = match mapper.allocate_frame() {
+            Some(range) => range.start(),
             None => {
                 rollback_stack(mapper, &stack_pages, stack_count)?;
                 rollback_load(mapper, load)?;
                 return Err(AddressSpaceBuildError::StackMappingFailed);
             }
         };
-        let physical_address = frame.start_address();
         match mapper.map_page(page, physical_address, MappingFlags::read_write()) {
             Ok(flush) => flush.flush(),
             Err(_) => {
