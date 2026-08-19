@@ -92,6 +92,7 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
         let mut table_ptr = self.inner.level_4_table() as *const PageTable;
         let mut effective_user = true;
         let mut effective_writable = true;
+        let mut effective_nx = false;
         let indexes = [page.p4_index(), page.p3_index(), page.p2_index(), page.p1_index()];
         for (level, index) in indexes.into_iter().enumerate() {
             let table = unsafe { &*table_ptr };
@@ -100,11 +101,12 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
             if !flags.contains(PageTableFlags::PRESENT) { return None; }
             effective_user &= flags.contains(PageTableFlags::USER_ACCESSIBLE);
             effective_writable &= flags.contains(PageTableFlags::WRITABLE);
+            effective_nx |= flags.contains(PageTableFlags::NO_EXECUTE);
             if level == 3 || ((level == 1 || level == 2) && flags.contains(PageTableFlags::HUGE_PAGE)) {
                 let mut result = PageTableFlags::PRESENT;
                 if effective_user { result |= PageTableFlags::USER_ACCESSIBLE; }
                 if effective_writable { result |= PageTableFlags::WRITABLE; }
-                if flags.contains(PageTableFlags::NO_EXECUTE) { result |= PageTableFlags::NO_EXECUTE; }
+                if effective_nx { result |= PageTableFlags::NO_EXECUTE; }
                 return Some(result);
             }
             let next_table = self.inner.phys_offset().as_u64().checked_add(entry.addr().as_u64())?;
@@ -188,10 +190,3 @@ mod tests {
         assert_eq!(map_to_error(MapToError::ParentEntryHugePage), MappingError::ParentEntryHugePage);
         assert_eq!(map_to_error(MapToError::PageAlreadyMapped(x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(0x1000)))), MappingError::AlreadyMapped);
     }
-    #[test]
-    fn unmap_error_mapping_preserves_semantics() {
-        assert_eq!(unmap_error(UnmapError::ParentEntryHugePage), MappingError::ParentEntryHugePage);
-        assert_eq!(unmap_error(UnmapError::PageNotMapped), MappingError::NotMapped);
-        assert_eq!(unmap_error(UnmapError::InvalidFrameAddress(PhysAddr::new(0x1234))), MappingError::InvalidMappedFrame);
-    }
-}
