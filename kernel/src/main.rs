@@ -141,7 +141,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             Ok(elf) => match unsafe { arch::x86_64::process_loader::load_process_image(mapping, &mut frame_allocator, image, elf) } {
                 Ok((root, populated)) => match process::UserLaunchPlan::from_populated(populated) {
                     Ok(plan) => match arch::x86_64::user_launch::prepare_launch(root, plan) {
-                        Ok(prepared) => { serial::write_str("X11-OS: userspace address space populated\r\nX11-OS: userspace launch prepared\r\n"); Some(prepared) }
+                        Ok(prepared) => { serial::write_str("X11-OS: userspace address space populated\r\nX11-OS: userspace launch prepared\r\n"); Some((populated.image(), prepared)) }
                         Err(_) => { serial::write_str("X11-OS: userspace launch preparation failed\r\n"); None }
                     },
                     Err(_) => { serial::write_str("X11-OS: userspace launch plan validation failed\r\n"); None }
@@ -154,7 +154,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     };
 
     match prepared_user_launch {
-        Some(prepared) => unsafe { arch::x86_64::user_activation::activate_and_enter_user(prepared) },
+        Some((image, prepared)) => {
+            let mut system = arch::x86_64::system_runtime::SystemRuntime::new();
+            unsafe { system.bind_cpu().expect("system runtime must bind to bootstrap CPU"); }
+            let (process, _) = system
+                .spawn_user_ready(image, prepared, scheduler::Priority::DEFAULT)
+                .expect("userspace process must enter scheduler ready state");
+            serial::write_str("X11-OS: userspace process bound to scheduler\r\n");
+            unsafe { system.start_user(process).expect("userspace process must start"); }
+        }
         None => {
             serial::write_str("X11-OS: userspace activation skipped\r\n");
             let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
