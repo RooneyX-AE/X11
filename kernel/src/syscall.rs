@@ -46,6 +46,25 @@ impl SyscallError {
     pub const fn abi_return_value(self) -> u64 { self.abi_error().return_value() }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyscallReturnAction {
+    Return,
+    Reschedule,
+    Terminate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyscallDispatch {
+    pub result: SyscallResult,
+    pub action: SyscallReturnAction,
+}
+
+impl SyscallDispatch {
+    pub const fn returned(result: SyscallResult) -> Self { Self { result, action: SyscallReturnAction::Return } }
+    pub const fn reschedule(value: u64) -> Self { Self { result: Ok(value), action: SyscallReturnAction::Reschedule } }
+    pub const fn terminate(value: u64) -> Self { Self { result: Ok(value), action: SyscallReturnAction::Terminate } }
+}
+
 pub type SyscallResult = Result<u64, SyscallError>;
 
 pub trait WriteSink {
@@ -71,16 +90,24 @@ pub fn dispatch_with_control<C>(request: SyscallRequest, control: &mut C) -> Sys
 where
     C: ProcessSyscallControl,
 {
-    match request.syscall().ok_or(SyscallError::UnknownNumber)? {
-        Syscall::Exit => {
-            control.exit(request.arg0)?;
-            Ok(0)
-        }
-        Syscall::Yield => {
-            control.yield_now()?;
-            Ok(0)
-        }
-        Syscall::Write => Err(SyscallError::NotImplemented),
+    dispatch_with_control_action(request, control).result
+}
+
+pub fn dispatch_with_control_action<C>(request: SyscallRequest, control: &mut C) -> SyscallDispatch
+where
+    C: ProcessSyscallControl,
+{
+    match request.syscall() {
+        None => SyscallDispatch::returned(Err(SyscallError::UnknownNumber)),
+        Some(Syscall::Exit) => match control.exit(request.arg0) {
+            Ok(()) => SyscallDispatch::terminate(0),
+            Err(error) => SyscallDispatch::returned(Err(error)),
+        },
+        Some(Syscall::Yield) => match control.yield_now() {
+            Ok(()) => SyscallDispatch::reschedule(0),
+            Err(error) => SyscallDispatch::returned(Err(error)),
+        },
+        Some(Syscall::Write) => SyscallDispatch::returned(Err(SyscallError::NotImplemented)),
     }
 }
 
@@ -99,16 +126,33 @@ where
     S: WriteSink,
     C: ProcessSyscallControl,
 {
-    match request.syscall().ok_or(SyscallError::UnknownNumber)? {
-        Syscall::Write => sys_write_with_memory(request.user_slice(), mapper, backend, sink),
-        Syscall::Exit => {
-            control.exit(request.arg0)?;
-            Ok(0)
-        }
-        Syscall::Yield => {
-            control.yield_now()?;
-            Ok(0)
-        }
+    dispatch_with_memory_and_control_action(request, mapper, backend, sink, control).result
+}
+
+pub fn dispatch_with_memory_and_control_action<M, B, S, C>(
+    request: SyscallRequest,
+    mapper: &M,
+    backend: &B,
+    sink: &mut S,
+    control: &mut C,
+) -> SyscallDispatch
+where
+    M: UserMemoryView,
+    B: UserCopyBackend,
+    S: WriteSink,
+    C: ProcessSyscallControl,
+{
+    match request.syscall() {
+        None => SyscallDispatch::returned(Err(SyscallError::UnknownNumber)),
+        Some(Syscall::Write) => SyscallDispatch::returned(sys_write_with_memory(request.user_slice(), mapper, backend, sink)),
+        Some(Syscall::Exit) => match control.exit(request.arg0) {
+            Ok(()) => SyscallDispatch::terminate(0),
+            Err(error) => SyscallDispatch::returned(Err(error)),
+        },
+        Some(Syscall::Yield) => match control.yield_now() {
+            Ok(()) => SyscallDispatch::reschedule(0),
+            Err(error) => SyscallDispatch::returned(Err(error)),
+        },
     }
 }
 
@@ -161,7 +205,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, dispatch_with_control, dispatch_with_memory, dispatch_with_memory_and_control, ProcessSyscallControl, SyscallError, SyscallRequest, WriteSink};
+    use super::{dispatch, dispatch_with_control, dispatch_with_memory, dispatch_with_memory_and_control, dispatch_with_memory_and_control_action, ProcessSyscallControl, SyscallError, SyscallRequest, SyscallReturnAction, WriteSink};
     use crate::memory::{KERNEL_SPACE_START, MappingFlags, MappingFlush, MappingError, Page4K, PageAccess, PageTableMapper, UserMemoryView, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
     use x11_os_abi::{Syscall, UserSlice};
 
@@ -183,58 +227,33 @@ mod tests {
 
     struct FakeBackend;
     impl crate::memory::UserCopyBackend for FakeBackend {
-        fn copy_from_user(&self, _: u64, dst: &mut [u8]) -> Result<(), UserReadError> {
-            dst.fill(b'A');
-            Ok(())
-        }
+        fn copy_from_user(&self, _: u64, dst: &mut [u8]) -> Result<(), UserReadError> { dst.fill(b'A'); Ok(()) }
     }
 
-    #[derive(Default)]
-    struct Sink(Vec<u8>);
-    impl WriteSink for Sink {
-        fn write(&mut self, bytes: &[u8]) -> Result<(), SyscallError> {
-            self.0.extend_from_slice(bytes);
-            Ok(())
-        }
-    }
+    #[derive(Default)] struct Sink(Vec<u8>);
+    impl WriteSink for Sink { fn write(&mut self, bytes: &[u8]) -> Result<(), SyscallError> { self.0.extend_from_slice(bytes); Ok(()) } }
 
     struct FailingSink;
-    impl WriteSink for FailingSink {
-        fn write(&mut self, _: &[u8]) -> Result<(), SyscallError> { Err(SyscallError::WriteFailed) }
-    }
+    impl WriteSink for FailingSink { fn write(&mut self, _: &[u8]) -> Result<(), SyscallError> { Err(SyscallError::WriteFailed) } }
 
-    #[derive(Default)]
-    struct Control {
-        exited: Option<u64>,
-        yields: usize,
-    }
+    #[derive(Default)] struct Control { exited: Option<u64>, yields: usize }
     impl ProcessSyscallControl for Control {
-        fn exit(&mut self, code: u64) -> Result<(), SyscallError> {
-            self.exited = Some(code);
-            Ok(())
-        }
-
-        fn yield_now(&mut self) -> Result<(), SyscallError> {
-            self.yields += 1;
-            Ok(())
-        }
+        fn exit(&mut self, code: u64) -> Result<(), SyscallError> { self.exited = Some(code); Ok(()) }
+        fn yield_now(&mut self) -> Result<(), SyscallError> { self.yields += 1; Ok(()) }
     }
 
-    #[test]
-    fn decodes_shared_syscall_numbers() {
+    #[test] fn decodes_shared_syscall_numbers() {
         assert_eq!(SyscallRequest::new(Syscall::Write.number(), 1, 2, 3).syscall(), Some(Syscall::Write));
         assert_eq!(SyscallRequest::new(Syscall::Exit.number(), 0, 0, 0).syscall(), Some(Syscall::Exit));
         assert_eq!(SyscallRequest::new(Syscall::Yield.number(), 0, 0, 0).syscall(), Some(Syscall::Yield));
     }
 
-    #[test]
-    fn exit_and_yield_requests_have_explicit_arguments() {
+    #[test] fn exit_and_yield_requests_have_explicit_arguments() {
         assert_eq!(SyscallRequest::exit(42).arg0, 42);
         assert_eq!(SyscallRequest::yield_now().number, Syscall::Yield.number());
     }
 
-    #[test]
-    fn process_control_executes_exit_and_yield_without_global_state() {
+    #[test] fn process_control_executes_exit_and_yield_without_global_state() {
         let mut control = Control::default();
         assert_eq!(dispatch_with_control(SyscallRequest::exit(42), &mut control), Ok(0));
         assert_eq!(control.exited, Some(42));
@@ -242,8 +261,36 @@ mod tests {
         assert_eq!(control.yields, 1);
     }
 
-    #[test]
-    fn combined_dispatch_routes_write_and_process_control() {
+    #[test] fn lifecycle_success_selects_actions() {
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        let backend = FakeBackend;
+        let mut sink = Sink::default();
+        let mut control = Control::default();
+        let exit = dispatch_with_memory_and_control_action(SyscallRequest::exit(42), &mapper, &backend, &mut sink, &mut control);
+        assert_eq!(exit.result, Ok(0));
+        assert_eq!(exit.action, SyscallReturnAction::Terminate);
+        let yield_result = dispatch_with_memory_and_control_action(SyscallRequest::yield_now(), &mapper, &backend, &mut sink, &mut control);
+        assert_eq!(yield_result.result, Ok(0));
+        assert_eq!(yield_result.action, SyscallReturnAction::Reschedule);
+    }
+
+    #[test] fn lifecycle_failure_always_returns() {
+        struct FailingControl;
+        impl ProcessSyscallControl for FailingControl {
+            fn exit(&mut self, _: u64) -> Result<(), SyscallError> { Err(SyscallError::InvalidArguments) }
+            fn yield_now(&mut self) -> Result<(), SyscallError> { Err(SyscallError::InvalidArguments) }
+        }
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        let backend = FakeBackend;
+        let mut sink = Sink::default();
+        let mut control = FailingControl;
+        let exit = dispatch_with_memory_and_control_action(SyscallRequest::exit(1), &mapper, &backend, &mut sink, &mut control);
+        assert_eq!(exit.action, SyscallReturnAction::Return);
+        let yield_result = dispatch_with_memory_and_control_action(SyscallRequest::yield_now(), &mapper, &backend, &mut sink, &mut control);
+        assert_eq!(yield_result.action, SyscallReturnAction::Return);
+    }
+
+    #[test] fn combined_dispatch_routes_write_and_process_control() {
         let mapper = FakeMapper { access: PageAccess::user_read_only() };
         let backend = FakeBackend;
         let mut sink = Sink::default();
@@ -255,25 +302,17 @@ mod tests {
         assert_eq!(control.yields, 1);
     }
 
-    #[test]
-    fn syscall_errors_encode_to_shared_abi() {
+    #[test] fn syscall_errors_encode_to_shared_abi() {
         assert_eq!(SyscallError::UnknownNumber.abi_return_value(), x11_os_abi::SyscallError::UnknownSyscall.return_value());
         assert_eq!(SyscallError::NotImplemented.abi_return_value(), x11_os_abi::SyscallError::NotImplemented.return_value());
         assert_eq!(SyscallError::WriteFailed.abi_return_value(), x11_os_abi::SyscallError::WriteFailed.return_value());
     }
 
-    #[test]
-    fn rejects_unknown_syscall_numbers() {
-        assert_eq!(dispatch(SyscallRequest::new(0xffff, 0, 0, 0)), Err(SyscallError::UnknownNumber));
-    }
+    #[test] fn rejects_unknown_syscall_numbers() { assert_eq!(dispatch(SyscallRequest::new(0xffff, 0, 0, 0)), Err(SyscallError::UnknownNumber)); }
 
-    #[test]
-    fn write_rejects_kernel_address_before_dereference() {
-        assert_eq!(dispatch(SyscallRequest::write(UserSlice { ptr: KERNEL_SPACE_START, len: 1 })), Err(SyscallError::InvalidUserRange(UserRangeError::OutsideUserSpace)));
-    }
+    #[test] fn write_rejects_kernel_address_before_dereference() { assert_eq!(dispatch(SyscallRequest::write(UserSlice { ptr: KERNEL_SPACE_START, len: 1 })), Err(SyscallError::InvalidUserRange(UserRangeError::OutsideUserSpace))); }
 
-    #[test]
-    fn write_executes_through_validated_copy_and_sink() {
+    #[test] fn write_executes_through_validated_copy_and_sink() {
         let mapper = FakeMapper { access: PageAccess::user_read_only() };
         let backend = FakeBackend;
         let mut sink = Sink::default();
@@ -283,19 +322,14 @@ mod tests {
         assert!(sink.0.iter().all(|byte| *byte == b'A'));
     }
 
-    #[test]
-    fn write_propagates_sink_failure_without_claiming_success() {
+    #[test] fn write_propagates_sink_failure_without_claiming_success() {
         let mapper = FakeMapper { access: PageAccess::user_read_only() };
         let backend = FakeBackend;
         let mut sink = FailingSink;
-        assert_eq!(
-            dispatch_with_memory(SyscallRequest::write(UserSlice { ptr: USER_SPACE_START, len: 4 }), &mapper, &backend, &mut sink),
-            Err(SyscallError::WriteFailed)
-        );
+        assert_eq!(dispatch_with_memory(SyscallRequest::write(UserSlice { ptr: USER_SPACE_START, len: 4 }), &mapper, &backend, &mut sink), Err(SyscallError::WriteFailed));
     }
 
-    #[test]
-    fn write_rejects_unmapped_before_sink() {
+    #[test] fn write_rejects_unmapped_before_sink() {
         let mapper = FakeMapper { access: PageAccess::unmapped() };
         let backend = FakeBackend;
         let mut sink = Sink::default();
