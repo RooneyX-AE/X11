@@ -30,6 +30,13 @@ const CROSS_CPL_FRAME_BYTES: usize = 5 * core::mem::size_of::<u64>();
 const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
+fn syscall_result_abi_value(result: crate::syscall::SyscallResult) -> u64 {
+    match result {
+        Ok(value) => value,
+        Err(error) => error.abi_return_value(),
+    }
+}
+
 struct SerialWriteSink;
 impl crate::syscall::WriteSink for SerialWriteSink {
     fn write(&mut self, bytes: &[u8]) -> Result<(), crate::syscall::SyscallError> {
@@ -55,8 +62,9 @@ extern "C" fn syscall_entry_rust(registers: *mut SavedRegisters, return_frame: *
         None => Err(crate::syscall::SyscallError::NotImplemented),
     };
 
-    if let Ok(value) = result { registers.rax = value; }
-    crate::arch::x86_64::idt::record_user_trap(result.is_ok());
+    let return_value = syscall_result_abi_value(result);
+    registers.rax = return_value;
+    crate::arch::x86_64::idt::record_user_trap(return_value < u64::MAX - 16);
 }
 
 #[unsafe(naked)]
@@ -109,11 +117,24 @@ pub unsafe extern "C" fn timer_entry() {
 
 #[cfg(test)]
 mod tests {
-    use super::{InterruptReturnFrame, SavedRegisters, CROSS_CPL_FRAME_BYTES, GPR_BYTES, SAME_CPL_FRAME_BYTES};
+    use super::{syscall_result_abi_value, InterruptReturnFrame, SavedRegisters, CROSS_CPL_FRAME_BYTES, GPR_BYTES, SAME_CPL_FRAME_BYTES};
     use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
     #[test] fn saved_register_layout_is_exact() { assert_eq!(core::mem::size_of::<SavedRegisters>(), 120); assert_eq!(GPR_BYTES, 120); }
     #[test] fn return_frame_sizes_match_same_and_cross_cpl() { assert_eq!(SAME_CPL_FRAME_BYTES, 24); assert_eq!(CROSS_CPL_FRAME_BYTES, 40); }
+
+    #[test]
+    fn syscall_success_returns_value_in_rax_contract() {
+        assert_eq!(syscall_result_abi_value(Ok(300)), 300);
+    }
+
+    #[test]
+    fn syscall_failure_returns_negative_abi_value() {
+        let error = crate::syscall::SyscallError::WriteFailed;
+        assert_eq!(syscall_result_abi_value(Err(error)), error.abi_return_value());
+        assert!(syscall_result_abi_value(Err(error)) > u64::MAX - 16);
+    }
+
     #[test]
     fn user_return_frame_reads_rsp_and_ss() {
         let mut raw = [0u64; 5]; raw[0] = 0x1000; raw[1] = USER_CODE_SELECTOR as u64; raw[2] = 0x202; raw[3] = 0x8000; raw[4] = USER_DATA_SELECTOR as u64;
