@@ -81,7 +81,7 @@ impl InterruptedState {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<ReturnState>() == 48);
+const _: () = assert!(core::mem::size_of::<ReturnState>() == 64);
 const _: () = assert!(core::mem::offset_of!(InterruptedState, registers) == 0);
 const _: () = assert!(core::mem::offset_of!(InterruptedState, return_state) == 120);
 
