@@ -31,10 +31,7 @@ const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 
 fn syscall_result_abi_value(result: crate::syscall::SyscallResult) -> u64 {
-    match result {
-        Ok(value) => value,
-        Err(error) => error.abi_return_value(),
-    }
+    match result { Ok(value) => value, Err(error) => error.abi_return_value() }
 }
 
 struct SerialWriteSink;
@@ -89,6 +86,19 @@ extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mu
     let capture_result = unsafe { crate::arch::x86_64::cpu_local::local().capture_interrupted(registers, frame, resume_rsp) };
     crate::arch::x86_64::idt::record_timer_interrupt();
     if capture_result.is_err() { return; }
+
+    // The legacy kernel timer dispatcher owns only kernel execution contexts.
+    // A userspace task has a separate `iretq` binding and must never be handed
+    // to the kernel `ExecutionRegistry`. Until userspace timer rescheduling is
+    // implemented, consume the snapshot and resume the interrupted ring3 task.
+    if let Some(system_ptr) = crate::arch::x86_64::cpu_local::local().system_runtime_ptr() {
+        let system = unsafe { &*(system_ptr as *mut crate::arch::x86_64::system_runtime::SystemRuntime) };
+        if system.current_user_binding().is_some() {
+            let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
+            return;
+        }
+    }
+
     let Some(runtime_ptr) = crate::arch::x86_64::cpu_local::local().runtime_ptr() else { return; };
     let outcome = unsafe { (&mut *(runtime_ptr as *mut crate::arch::x86_64::runtime::KernelRuntime)).handle_timer_preemption() };
     match outcome {
@@ -122,25 +132,12 @@ mod tests {
 
     #[test] fn saved_register_layout_is_exact() { assert_eq!(core::mem::size_of::<SavedRegisters>(), 120); assert_eq!(GPR_BYTES, 120); }
     #[test] fn return_frame_sizes_match_same_and_cross_cpl() { assert_eq!(SAME_CPL_FRAME_BYTES, 24); assert_eq!(CROSS_CPL_FRAME_BYTES, 40); }
-
-    #[test]
-    fn syscall_success_returns_value_in_rax_contract() {
-        assert_eq!(syscall_result_abi_value(Ok(300)), 300);
-    }
-
-    #[test]
-    fn syscall_failure_returns_negative_abi_value() {
-        let error = crate::syscall::SyscallError::WriteFailed;
-        assert_eq!(syscall_result_abi_value(Err(error)), error.abi_return_value());
-        assert!(syscall_result_abi_value(Err(error)) > u64::MAX - 16);
-    }
-
+    #[test] fn syscall_success_returns_value_in_rax_contract() { assert_eq!(syscall_result_abi_value(Ok(300)), 300); }
+    #[test] fn syscall_failure_returns_negative_abi_value() { let error = crate::syscall::SyscallError::WriteFailed; assert_eq!(syscall_result_abi_value(Err(error)), error.abi_return_value()); assert!(syscall_result_abi_value(Err(error)) > u64::MAX - 16); }
     #[test]
     fn user_return_frame_reads_rsp_and_ss() {
         let mut raw = [0u64; 5]; raw[0] = 0x1000; raw[1] = USER_CODE_SELECTOR as u64; raw[2] = 0x202; raw[3] = 0x8000; raw[4] = USER_DATA_SELECTOR as u64;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        assert_eq!(unsafe { frame.rsp() }, Some(0x8000));
-        assert_eq!(unsafe { frame.ss() }, Some(USER_DATA_SELECTOR as u64));
-        assert_eq!(frame.resume_rsp(), Some(0x8000));
+        assert_eq!(unsafe { frame.rsp() }, Some(0x8000)); assert_eq!(unsafe { frame.ss() }, Some(USER_DATA_SELECTOR as u64)); assert_eq!(frame.resume_rsp(), Some(0x8000));
     }
 }
