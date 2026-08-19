@@ -59,6 +59,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::{UserReturnError, UserReturnFrame};
+    use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
     use crate::memory::{user_stack_range, USER_SPACE_START};
     use crate::process::InitialContext;
 
@@ -66,11 +67,11 @@ mod tests {
     fn builds_valid_ring3_iret_state() {
         let stack = user_stack_range().unwrap();
         let context = InitialContext::new(USER_SPACE_START + 0x1000, stack.end()).unwrap();
-        let frame = UserReturnFrame::from_initial(context, 0x1b, 0x13).unwrap();
+        let frame = UserReturnFrame::from_initial(context, USER_CODE_SELECTOR, USER_DATA_SELECTOR).unwrap();
         assert_eq!(frame.rip, context.entry());
         assert_eq!(frame.rsp, context.stack_pointer());
-        assert_eq!(frame.cs, 0x1b);
-        assert_eq!(frame.ss, 0x13);
+        assert_eq!(frame.cs, USER_CODE_SELECTOR as u64);
+        assert_eq!(frame.ss, USER_DATA_SELECTOR as u64);
         assert_ne!(frame.rflags & 0x2, 0);
         assert_ne!(frame.rflags & (1 << 9), 0);
     }
