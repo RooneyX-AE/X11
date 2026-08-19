@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 
-use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId};
+use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId, TaskKind};
 
 use super::context_switch::Context;
 use super::cpu_local::{self, RuntimeBindingError};
@@ -17,6 +17,7 @@ pub enum RuntimeError {
     Task(KernelTaskError),
     NoRunnableTask,
     MissingExecutionPair,
+    UserspaceTaskRequiresSystemRuntime,
     Yield(YieldError),
     PreemptionDisabled,
     InterruptedState(ExecutionError),
@@ -97,9 +98,6 @@ impl KernelRuntime {
             return Err(RuntimeError::MissingExecutionPair);
         };
 
-        // Never consume the CPU-local snapshot when the task already owns one.
-        // This keeps snapshot ownership transactional if an interrupt is
-        // observed twice before the first snapshot has been consumed.
         if binding.interrupted().is_some() {
             return Err(RuntimeError::InterruptedState(ExecutionError::InterruptedStateAlreadyPresent));
         }
@@ -112,9 +110,7 @@ impl KernelRuntime {
         binding.install_interrupted(snapshot).map_err(RuntimeError::InterruptedState)
     }
 
-    fn discard_interrupted_state(&self) {
-        let _ = cpu_local::local().take_interrupted();
-    }
+    fn discard_interrupted_state(&self) { let _ = cpu_local::local().take_interrupted(); }
 
     pub fn spawn(&mut self, priority: Priority, entry: extern "C" fn() -> !) -> Result<TaskId, RuntimeError> {
         self.manager.spawn(priority, entry).map_err(RuntimeError::Task)
@@ -122,21 +118,21 @@ impl KernelRuntime {
 
     pub fn prepare_run(&mut self) -> Result<TaskId, RuntimeError> {
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
-        decision.next.ok_or(RuntimeError::NoRunnableTask)
+        let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+        if self.manager.scheduler.task_kind(next) == Some(TaskKind::Userspace) {
+            return Err(RuntimeError::UserspaceTaskRequiresSystemRuntime);
+        }
+        Ok(next)
     }
 
     pub fn prepare_preemption(&self) -> Result<PreemptionPlan, RuntimeError> {
         let next = self.manager.scheduler.next_ready().ok_or(RuntimeError::NoRunnableTask)?;
+        if self.manager.scheduler.task_kind(next) == Some(TaskKind::Userspace) {
+            return Err(RuntimeError::UserspaceTaskRequiresSystemRuntime);
+        }
         self.manager.executions.preemption_plan(next).ok_or(RuntimeError::MissingExecutionPair)
     }
 
-    /// Handles timer-triggered preemption at the interrupt-return boundary.
-    ///
-    /// The interrupted CPU snapshot is committed before the scheduler mutates
-    /// task state, so a failed snapshot commit cannot leave the scheduler
-    /// claiming a new Running task while the CPU is still executing the old one.
-    /// The same timer event also advances the sleep scheduler using timer ticks,
-    /// so blocked tasks become runnable before the next dispatch decision.
     pub unsafe fn handle_timer_preemption(&mut self) -> Result<InterruptPreemption, RuntimeError> {
         let _ = super::idt::take_timer_pending();
 
@@ -155,6 +151,10 @@ impl KernelRuntime {
             self.request_reschedule();
             return Ok(InterruptPreemption::ResumeCurrent);
         };
+        if self.manager.scheduler.task_kind(candidate) == Some(TaskKind::Userspace) {
+            self.request_reschedule();
+            return Err(RuntimeError::UserspaceTaskRequiresSystemRuntime);
+        }
         if Some(candidate) == current {
             self.discard_interrupted_state();
             return Ok(InterruptPreemption::ResumeCurrent);
@@ -169,8 +169,6 @@ impl KernelRuntime {
             }
         };
 
-        // Commit the old task's interrupted state before mutating scheduler
-        // ownership. This preserves the atomic handoff invariant on failure.
         if let Err(error) = self.commit_interrupted_state() {
             self.request_reschedule();
             return Err(error);
@@ -223,6 +221,9 @@ impl KernelRuntime {
 
     pub unsafe fn dispatch_once(&mut self) -> Result<(), RuntimeError> {
         if let Some(candidate) = self.manager.scheduler.next_ready() {
+            if self.manager.scheduler.task_kind(candidate) == Some(TaskKind::Userspace) {
+                return Err(RuntimeError::UserspaceTaskRequiresSystemRuntime);
+            }
             if matches!(self.manager.executions.preemption_plan(candidate), Some(PreemptionPlan::IretKernel { .. })) {
                 return Err(RuntimeError::InterruptedTaskRequiresIret);
             }
@@ -230,6 +231,9 @@ impl KernelRuntime {
 
         let decision = self.manager.prepare_dispatch().map_err(RuntimeError::Task)?;
         let next = decision.next.ok_or(RuntimeError::NoRunnableTask)?;
+        if self.manager.scheduler.task_kind(next) == Some(TaskKind::Userspace) {
+            return Err(RuntimeError::UserspaceTaskRequiresSystemRuntime);
+        }
 
         match decision.previous {
             None => {
