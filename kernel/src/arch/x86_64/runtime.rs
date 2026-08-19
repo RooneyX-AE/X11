@@ -7,7 +7,7 @@ use crate::scheduler::{PreemptionGate, Priority, RescheduleRequest, TaskId, Task
 use super::context_switch::Context;
 use super::cpu_local::{self, RuntimeBindingError};
 use super::execution::ExecutionError;
-use super::interrupted_state::KernelPreemptState;
+use super::interrupted_state::InterruptedState;
 use super::kernel_task::{KernelTaskError, KernelTaskManager};
 use super::preemption_plan::PreemptionPlan;
 use super::yield_switch::{self, YieldError};
@@ -33,7 +33,7 @@ impl From<YieldError> for RuntimeError {
 pub enum InterruptPreemption {
     ResumeCurrent,
     ReturnToContext(Context),
-    ReturnToKernel(KernelPreemptState),
+    ReturnToKernel(InterruptedState),
 }
 
 #[derive(Debug)]
