@@ -15,6 +15,7 @@ use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 pub struct CpuLocalState {
     current_task: UnsafeCell<Option<TaskId>>,
     runtime: UnsafeCell<Option<usize>>,
+    system_runtime: UnsafeCell<Option<usize>>,
     interrupted: UnsafeCell<Option<(TaskId, InterruptedState)>>,
 }
 
@@ -25,6 +26,7 @@ impl CpuLocalState {
         Self {
             current_task: UnsafeCell::new(None),
             runtime: UnsafeCell::new(None),
+            system_runtime: UnsafeCell::new(None),
             interrupted: UnsafeCell::new(None),
         }
     }
@@ -61,6 +63,32 @@ impl CpuLocalState {
 
     pub unsafe fn unbind_runtime(&self) {
         unsafe { *self.runtime.get() = None };
+    }
+
+    /// Binds the unified system runtime that owns process + scheduler + user
+    /// execution state. This is intentionally separate from `bind_runtime`
+    /// until the existing timer/preemption path is migrated.
+    ///
+    /// # Safety
+    /// The pointer must remain valid for the lifetime of the CPU binding.
+    pub unsafe fn bind_system_runtime(&self, runtime: *mut ()) -> Result<(), RuntimeBindingError> {
+        let slot = unsafe { &mut *self.system_runtime.get() };
+        if slot.is_some() {
+            return Err(RuntimeBindingError::AlreadyBound);
+        }
+        if runtime.is_null() {
+            return Err(RuntimeBindingError::Null);
+        }
+        *slot = Some(runtime as usize);
+        Ok(())
+    }
+
+    pub fn system_runtime_ptr(&self) -> Option<*mut ()> {
+        unsafe { (*self.system_runtime.get()).map(|address| address as *mut ()) }
+    }
+
+    pub unsafe fn unbind_system_runtime(&self) {
+        unsafe { *self.system_runtime.get() = None };
     }
 
     /// Captures the interrupted state for the current CPU task.
@@ -142,6 +170,18 @@ mod tests {
         assert_eq!(unsafe { cpu.bind_runtime(ptr) }, Err(RuntimeBindingError::AlreadyBound));
         unsafe { cpu.unbind_runtime() };
         assert_eq!(cpu.runtime_ptr(), None);
+    }
+
+    #[test]
+    fn system_runtime_binding_is_stable_and_separate() {
+        let cpu = CpuLocalState::new();
+        let mut marker = 0u8;
+        let ptr = core::ptr::addr_of_mut!(marker).cast::<()>();
+        unsafe { cpu.bind_system_runtime(ptr).unwrap() };
+        assert_eq!(cpu.system_runtime_ptr(), Some(ptr));
+        assert_eq!(unsafe { cpu.bind_system_runtime(ptr) }, Err(RuntimeBindingError::AlreadyBound));
+        unsafe { cpu.unbind_system_runtime() };
+        assert_eq!(cpu.system_runtime_ptr(), None);
     }
 
     #[test]
