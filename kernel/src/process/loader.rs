@@ -4,18 +4,12 @@
 //! virtual mappings but cannot return physical frames. That ownership rule is
 //! explicit here rather than pretending this is a fully reclaiming transaction.
 
-use crate::memory::{MappingError, MappingFlags, Page4K, PageTableMapper, PAGE_SIZE_4K};
+use crate::memory::{MappingError, MappingFlags, MappingFlush, Page4K, PageTableMapper, PAGE_SIZE_4K};
 
 use super::LoadPlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LoadError {
-    InvalidPage,
-    Mapping(MappingError),
-    TooManyPages,
-    InvalidFlags,
-    RollbackFailed,
-}
+pub enum LoadError { InvalidPage, Mapping(MappingError), TooManyPages, InvalidFlags, RollbackFailed }
 
 pub const MAX_MAPPED_PAGES: usize = 128;
 
@@ -33,34 +27,17 @@ pub struct LoadResult {
 }
 
 impl LoadResult {
-    pub(crate) const fn from_parts(
-        mapped_pages: usize,
-        entry: u64,
-        pages: [Option<MappedPage>; MAX_MAPPED_PAGES],
-    ) -> Self {
+    pub(crate) const fn from_parts(mapped_pages: usize, entry: u64, pages: [Option<MappedPage>; MAX_MAPPED_PAGES]) -> Self {
         Self { mapped_pages, entry, pages }
     }
-
-    pub fn page(self, index: usize) -> Option<MappedPage> {
-        if index >= self.mapped_pages { None } else { self.pages[index] }
-    }
-
+    pub fn page(self, index: usize) -> Option<MappedPage> { if index >= self.mapped_pages { None } else { self.pages[index] } }
     pub fn contains_page(self, virtual_address: u64) -> bool {
-        self.page_base(virtual_address)
-            .is_some_and(|page| (0..self.mapped_pages).any(|index| {
-                self.page(index).is_some_and(|mapped| mapped.virtual_address == page)
-            }))
+        self.page_base(virtual_address).is_some_and(|page| (0..self.mapped_pages).any(|index| self.page(index).is_some_and(|mapped| mapped.virtual_address == page)))
     }
-
-    fn page_base(self, virtual_address: u64) -> Option<u64> {
-        Some(virtual_address & !(PAGE_SIZE_4K - 1))
-    }
+    fn page_base(self, virtual_address: u64) -> Option<u64> { Some(virtual_address & !(PAGE_SIZE_4K - 1)) }
 }
 
-pub fn map_load_plan<M: PageTableMapper>(
-    mapper: &mut M,
-    plan: LoadPlan,
-) -> Result<LoadResult, LoadError> {
+pub fn map_load_plan<M: PageTableMapper>(mapper: &mut M, plan: LoadPlan) -> Result<LoadResult, LoadError> {
     let mut pages = [None; MAX_MAPPED_PAGES];
     let mut count = 0usize;
 
@@ -74,38 +51,23 @@ pub fn map_load_plan<M: PageTableMapper>(
                 rollback(mapper, &pages, count)?;
                 return Err(LoadError::TooManyPages);
             }
-
             let page = match Page4K::from_start_address(address) {
                 Some(page) => page,
-                None => {
-                    rollback(mapper, &pages, count)?;
-                    return Err(LoadError::InvalidPage);
-                }
+                None => { rollback(mapper, &pages, count)?; return Err(LoadError::InvalidPage); }
             };
             let frame = match mapper.allocate_frame() {
                 Some(frame) => frame,
-                None => {
-                    rollback(mapper, &pages, count)?;
-                    return Err(LoadError::Mapping(MappingError::FrameAllocationFailed));
-                }
+                None => { rollback(mapper, &pages, count)?; return Err(LoadError::Mapping(MappingError::FrameAllocationFailed)); }
             };
-
             match mapper.map_page(page, frame, flags) {
                 Ok(flush) => flush.flush(),
-                Err(error) => {
-                    rollback(mapper, &pages, count)?;
-                    return Err(LoadError::Mapping(error));
-                }
+                Err(error) => { rollback(mapper, &pages, count)?; return Err(LoadError::Mapping(error)); }
             }
-
             pages[count] = Some(MappedPage { virtual_address: address, physical_address: frame });
             count += 1;
             address = match address.checked_add(PAGE_SIZE_4K) {
                 Some(value) => value,
-                None => {
-                    rollback(mapper, &pages, count)?;
-                    return Err(LoadError::InvalidPage);
-                }
+                None => { rollback(mapper, &pages, count)?; return Err(LoadError::InvalidPage); }
             };
         }
     }
@@ -126,15 +88,7 @@ fn rollback<M: PageTableMapper>(mapper: &mut M, pages: &[Option<MappedPage>; MAX
 fn flags_from_elf(flags: u32) -> Option<MappingFlags> {
     let writable = flags & 2 != 0;
     let executable = flags & 1 != 0;
-
-    // x86 user pages do not expose an independent read permission bit. A
-    // writable page is necessarily readable, so PF_W without PF_R maps to
-    // read/write. Likewise, executable user text is readable in practice, so
-    // PF_X without PF_R maps to read/execute. W+X remains forbidden.
-    if writable && executable {
-        return None;
-    }
-
+    if writable && executable { return None; }
     match (writable, executable) {
         (false, false) => Some(MappingFlags::read_only()),
         (true, false) => Some(MappingFlags::read_write()),
@@ -147,7 +101,6 @@ fn flags_from_elf(flags: u32) -> Option<MappingFlags> {
 mod tests {
     use super::flags_from_elf;
     use crate::memory::MappingFlags;
-
     #[test]
     fn translates_elf_permissions_without_requiring_pf_r() {
         assert_eq!(flags_from_elf(0), Some(MappingFlags::read_only()));
