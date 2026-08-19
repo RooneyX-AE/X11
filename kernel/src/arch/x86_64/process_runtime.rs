@@ -6,6 +6,7 @@
 
 use crate::process::{ProcessId, ProcessManager, ProcessManagerError, ProcessState};
 use crate::scheduler::TaskId;
+use crate::syscall::{ProcessSyscallControl, SyscallError};
 
 use super::runtime::{KernelRuntime, RuntimeError};
 
@@ -33,6 +34,28 @@ impl From<RuntimeError> for ProcessRuntimeError {
     fn from(error: RuntimeError) -> Self { Self::Runtime(error) }
 }
 
+impl ProcessRuntimeOwner<'_> {
+    fn syscall_error(error: ProcessRuntimeError) -> SyscallError {
+        match error {
+            ProcessRuntimeError::NoCurrentProcess
+            | ProcessRuntimeError::TaskBindingMismatch
+            | ProcessRuntimeError::ProcessNotRunning
+            | ProcessRuntimeError::Process(_)
+            | ProcessRuntimeError::Runtime(_) => SyscallError::InvalidArguments,
+        }
+    }
+}
+
+impl ProcessSyscallControl for ProcessRuntimeOwner<'_> {
+    fn exit(&mut self, code: u64) -> Result<(), SyscallError> {
+        self.exit_current(code).map_err(Self::syscall_error)
+    }
+
+    fn yield_now(&mut self) -> Result<(), SyscallError> {
+        self.request_yield().map_err(Self::syscall_error)
+    }
+}
+
 impl<'a> ProcessRuntimeOwner<'a> {
     pub fn new(processes: &'a mut ProcessManager, runtime: &'a mut KernelRuntime) -> Self {
         Self { processes, runtime, current_process: None }
@@ -58,9 +81,6 @@ impl<'a> ProcessRuntimeOwner<'a> {
     }
 
     /// Marks the current process exited and removes the matching runtime task.
-    ///
-    /// All cross-owner invariants are checked before mutating either owner, so
-    /// a binding mismatch cannot partially destroy process/runtime state.
     pub fn exit_current(&mut self, _code: u64) -> Result<(), ProcessRuntimeError> {
         let process = self.current_process.ok_or(ProcessRuntimeError::NoCurrentProcess)?;
         let binding = self.processes.binding(process)?.ok_or(ProcessRuntimeError::TaskBindingMismatch)?;
@@ -103,7 +123,8 @@ mod tests {
     use super::{ProcessRuntimeError, ProcessRuntimeOwner};
     use crate::memory::AddressSpaceId;
     use crate::process::{AddressSpaceSpec, ElfImage, LoadPlan, ProcessImage, ProcessManager, ProcessState, UserStackPlan};
-    use crate::scheduler::{ExecutionHandle, Priority, TaskId};
+    use crate::scheduler::{Priority, TaskId};
+    use crate::syscall::{ProcessSyscallControl, SyscallError};
 
     fn image() -> ProcessImage {
         let mut bytes = [0u8; 120];
@@ -135,10 +156,8 @@ mod tests {
     fn bind_current_rejects_task_mismatch() {
         let mut processes = ProcessManager::new();
         let process = processes.register_ready(image()).unwrap();
-        let task = TaskId::new(3, 1);
         let mut runtime = crate::arch::x86_64::runtime::KernelRuntime::new();
         let _runtime_task = runtime.spawn(Priority::DEFAULT, never_returns).unwrap();
-        let _execution = ExecutionHandle::for_task(task);
         assert_eq!(
             ProcessRuntimeOwner::new(&mut processes, &mut runtime).bind_current(process),
             Err(ProcessRuntimeError::TaskBindingMismatch)
@@ -153,5 +172,14 @@ mod tests {
         let mut owner = ProcessRuntimeOwner::new(&mut processes, &mut runtime);
         assert_eq!(owner.request_yield(), Err(ProcessRuntimeError::NoCurrentProcess));
         assert_eq!(processes.state(process), Ok(ProcessState::Ready));
+    }
+
+    #[test]
+    fn syscall_control_maps_owner_failure_to_invalid_arguments() {
+        let mut processes = ProcessManager::new();
+        let _process = processes.register_ready(image()).unwrap();
+        let mut runtime = crate::arch::x86_64::runtime::KernelRuntime::new();
+        let mut owner = ProcessRuntimeOwner::new(&mut processes, &mut runtime);
+        assert_eq!(owner.yield_now(), Err(SyscallError::InvalidArguments));
     }
 }
