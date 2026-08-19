@@ -5,12 +5,14 @@
 //! but no architecture-specific selector or assembly state.
 
 use super::PopulatedAddressSpace;
-use crate::memory::PAGE_SIZE_4K;
+use crate::memory::{Page4K, PAGE_SIZE_4K};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserLaunchError {
     EntryOutsideImage,
+    EntryNotExecutable,
     StackOutsideImage,
+    StackNotWritable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,6 +29,13 @@ impl UserLaunchPlan {
             return Err(UserLaunchError::EntryOutsideImage);
         }
 
+        let entry_page = Page4K::from_start_address(entry & !(PAGE_SIZE_4K - 1))
+            .ok_or(UserLaunchError::EntryOutsideImage)?;
+        let entry_access = image.mapper().page_access(entry_page.start_address());
+        if !entry_access.mapped || !entry_access.user || !entry_access.executable {
+            return Err(UserLaunchError::EntryNotExecutable);
+        }
+
         let stack_pointer = context.stack_pointer();
         let stack_ok = stack_pointer != 0 && (0..image.built().stack_count()).any(|index| {
             image.built().stack_page(index).is_some_and(|page| {
@@ -37,6 +46,13 @@ impl UserLaunchPlan {
         });
         if !stack_ok {
             return Err(UserLaunchError::StackOutsideImage);
+        }
+
+        let stack_page = Page4K::from_start_address(stack_pointer.saturating_sub(1) & !(PAGE_SIZE_4K - 1))
+            .ok_or(UserLaunchError::StackOutsideImage)?;
+        let stack_access = image.mapper().page_access(stack_page.start_address());
+        if !stack_access.mapped || !stack_access.user || !stack_access.writable || stack_access.executable {
+            return Err(UserLaunchError::StackNotWritable);
         }
 
         Ok(Self { entry, stack_pointer })
