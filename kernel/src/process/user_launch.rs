@@ -5,8 +5,8 @@
 //! and initial stack pointer, but no architecture-specific selector or
 //! assembly state.
 
-use super::PopulatedAddressSpace;
-use crate::memory::{AddressSpaceId, PAGE_SIZE_4K};
+use super::{AddressSpaceId, PopulatedAddressSpace};
+use crate::memory::PAGE_SIZE_4K;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserLaunchError {
@@ -68,7 +68,7 @@ impl UserLaunchPlan {
 #[cfg(test)]
 mod tests {
     use super::UserLaunchPlan;
-    use crate::memory::AddressSpaceId;
+    use crate::process::AddressSpaceId;
 
     #[test]
     fn plan_accessors_are_stable() {
