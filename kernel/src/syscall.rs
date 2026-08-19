@@ -28,12 +28,7 @@ impl SyscallRequest {
     }
 
     pub const fn syscall(self) -> Option<Syscall> {
-        match self.number {
-            0 => Some(Syscall::Write),
-            1 => Some(Syscall::Exit),
-            2 => Some(Syscall::Yield),
-            _ => None,
-        }
+        Syscall::from_number(self.number)
     }
 
     pub const fn user_slice(self) -> UserSlice {
