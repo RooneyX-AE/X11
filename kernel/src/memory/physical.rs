@@ -18,10 +18,9 @@ impl PhysicalMemoryMapping {
         Option::<u64>::from(boot_info.physical_memory_offset).map(Self::new)
     }
 
-    /// Installs the machine-wide bootloader direct-map contract exactly once.
     pub fn install_global(self) -> Result<(), Self> {
         match GLOBAL_MAPPING.call_once(|| self) {
-            installed if installed == self => Ok(()),
+            installed if *installed == self => Ok(()),
             installed => Err(*installed),
         }
     }
