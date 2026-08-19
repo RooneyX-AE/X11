@@ -7,6 +7,7 @@
 use core::cell::UnsafeCell;
 
 use crate::scheduler::TaskId;
+use crate::syscall::SyscallReturnAction;
 
 use super::interrupted_state::InterruptedState;
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
@@ -16,6 +17,7 @@ pub struct CpuLocalState {
     current_task: UnsafeCell<Option<TaskId>>,
     runtime: UnsafeCell<Option<usize>>,
     system_runtime: UnsafeCell<Option<usize>>,
+    syscall_action: UnsafeCell<Option<SyscallReturnAction>>,
     interrupted: UnsafeCell<Option<(TaskId, InterruptedState)>>,
 }
 
@@ -27,6 +29,7 @@ impl CpuLocalState {
             current_task: UnsafeCell::new(None),
             runtime: UnsafeCell::new(None),
             system_runtime: UnsafeCell::new(None),
+            syscall_action: UnsafeCell::new(None),
             interrupted: UnsafeCell::new(None),
         }
     }
@@ -37,6 +40,14 @@ impl CpuLocalState {
 
     pub fn current_task(&self) -> Option<TaskId> {
         unsafe { *self.current_task.get() }
+    }
+
+    pub unsafe fn publish_syscall_action(&self, action: SyscallReturnAction) {
+        unsafe { *self.syscall_action.get() = Some(action) };
+    }
+
+    pub fn take_syscall_action(&self) -> Option<SyscallReturnAction> {
+        unsafe { (*self.syscall_action.get()).take() }
     }
 
     /// Binds the single runtime instance owned by this CPU during bootstrap.
@@ -149,6 +160,7 @@ mod tests {
     use super::{CaptureError, CpuLocalState, RuntimeBindingError};
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::scheduler::TaskId;
+    use crate::syscall::SyscallReturnAction;
 
     #[test]
     fn cpu_local_current_task_round_trips() {
@@ -157,6 +169,14 @@ mod tests {
         assert_eq!(cpu.current_task(), Some(TaskId::new(7, 3)));
         unsafe { cpu.set_current_task(None) };
         assert_eq!(cpu.current_task(), None);
+    }
+
+    #[test]
+    fn syscall_action_mailbox_is_single_shot() {
+        let cpu = CpuLocalState::new();
+        unsafe { cpu.publish_syscall_action(SyscallReturnAction::Reschedule) };
+        assert_eq!(cpu.take_syscall_action(), Some(SyscallReturnAction::Reschedule));
+        assert_eq!(cpu.take_syscall_action(), None);
     }
 
     #[test]
