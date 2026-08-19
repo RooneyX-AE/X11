@@ -36,6 +36,7 @@ pub mod user_launch;
 pub mod user_memory;
 pub mod user_return;
 pub mod user_copy;
+pub mod user_successor;
 pub mod voluntary_switch;
 pub mod yield_switch;
 mod gdt;
