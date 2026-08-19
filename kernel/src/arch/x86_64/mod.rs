@@ -38,6 +38,7 @@ pub mod user_return;
 pub mod user_copy;
 pub mod user_successor;
 pub mod user_return_transfer;
+pub mod user_transfer;
 pub mod voluntary_switch;
 pub mod yield_switch;
 mod gdt;
