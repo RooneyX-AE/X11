@@ -29,6 +29,7 @@ pub mod tsc;
 pub mod user_activation;
 pub mod user_context;
 pub mod user_entry;
+pub mod user_execution;
 pub mod user_launch;
 pub mod user_memory;
 pub mod user_return;
