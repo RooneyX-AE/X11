@@ -83,7 +83,7 @@ pub fn map_load_plan<M: PageTableMapper>(
                 }
             };
             let frame = match mapper.allocate_frame() {
-                Some(range) => range.start(),
+                Some(frame) => frame,
                 None => {
                     rollback(mapper, &pages, count)?;
                     return Err(LoadError::Mapping(MappingError::FrameAllocationFailed));
