@@ -62,19 +62,18 @@ impl X86ExecutionBinding {
     /// Copies the interrupted CPU state out of the transient IRQ stack.
     ///
     /// # Safety
-    /// `registers`, `return_frame`, and `resume_rsp` must describe the live
-    /// state created by the architecture interrupt entry stub for this exact
-    /// task.
+    /// `registers` and `return_frame` must describe the live state created by
+    /// the architecture interrupt entry stub for this exact task.
     pub unsafe fn capture_interrupted(
         &mut self,
         registers: *const SavedRegisters,
         return_frame: InterruptReturnFrame,
-        resume_rsp: u64,
+        _resume_rsp: u64,
     ) -> Result<(), ExecutionError> {
         if self.interrupted.is_some() {
             return Err(ExecutionError::InterruptedStateAlreadyPresent);
         }
-        let snapshot = unsafe { InterruptedState::capture(registers, return_frame, resume_rsp) };
+        let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
         self.install_interrupted(snapshot)
     }
 
@@ -119,19 +118,20 @@ impl ExecutionBinding for X86ExecutionBinding {
 #[cfg(test)]
 mod tests {
     use super::{X86ExecutionBinding, KERNEL_STACK_SIZE};
+    use crate::arch::x86_64::interrupted_state::InterruptedState;
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::scheduler::{ExecutionBinding, TaskId};
 
     extern "C" fn never_returns() -> ! { loop {} }
 
-    fn kernel_snapshot() -> super::InterruptedState {
+    fn kernel_snapshot() -> InterruptedState {
         let registers = SavedRegisters::default();
         let mut raw = [0u64; 3];
         raw[0] = 0x1000;
         raw[1] = 0x10;
         raw[2] = 0x202;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        unsafe { super::InterruptedState::capture(&registers, frame, 0x8000) }
+        unsafe { InterruptedState::capture(&registers, frame) }
     }
 
     #[test]
