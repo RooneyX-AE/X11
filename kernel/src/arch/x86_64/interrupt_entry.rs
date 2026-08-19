@@ -216,14 +216,14 @@ mod tests {
     fn user_return_frame_reads_rsp_and_ss() {
         let mut raw = [0u64; 5];
         raw[0] = 0x1000;
-        raw[1] = 0x1B;
+        raw[1] = 0x1b;
         raw[2] = 0x202;
         raw[3] = 0x8000;
-        raw[4] = 0x23;
+        raw[4] = 0x13;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
         assert!(!unsafe { frame.is_kernel_return() });
         assert_eq!(unsafe { frame.rsp() }, Some(0x8000));
-        assert_eq!(unsafe { frame.ss() }, Some(0x23));
+        assert_eq!(unsafe { frame.ss() }, Some(0x13));
         assert_eq!(frame.resume_rsp(), Some(0x8000));
     }
 }
