@@ -115,7 +115,6 @@ jobs:
               "X11-OS: heap allocation verified",
               "X11-OS: userspace address space populated",
               "X11-OS: userspace launch prepared",
-              "X11-OS: userspace int 0x80 trap reached",
           ]
 
           position = -1
@@ -125,7 +124,11 @@ jobs:
                   raise SystemExit(f"missing or out-of-order runtime marker: {marker}")
               position = next_position
 
-          print("QEMU verified userspace image creation, ring-3 launch, int 0x80 trap, and return path")
+          trap_marker = "X11-OS: userspace int 0x80 trap reached"
+          if log.count(trap_marker) != 2:
+              raise SystemExit(f"expected exactly two userspace trap markers, found {log.count(trap_marker)}")
+
+          print("QEMU evidence: userspace entered CPL3, trapped twice through int 0x80, and returned to userspace after the first trap")
           PY
       - name: Upload diagnostics
         if: always()
