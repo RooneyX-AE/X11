@@ -1,41 +1,32 @@
 //! x86_64 backend for copying from validated userspace mappings.
 //!
 //! The syscall layer validates the complete user range first. This backend
-//! then translates each virtual chunk through the supplied page-table mapper,
-//! turns the resulting physical address into a kernel virtual address through
-//! the bootloader direct map, and performs the copy without assuming physical
-//! contiguity between user pages.
+//! then translates each virtual chunk through the supplied read-only memory
+//! view, turns the resulting physical address into a kernel virtual address
+//! through the bootloader direct map, and performs the copy without assuming
+//! physical contiguity between user pages.
 
-use crate::memory::{PageTableMapper, PhysicalMemoryMapping, UserCopyBackend, UserReadError, PAGE_SIZE_4K};
+use crate::memory::{PhysicalMemoryMapping, UserCopyBackend, UserMemoryView, UserReadError, PAGE_SIZE_4K};
 
-pub struct X86UserCopyBackend<'a, M: PageTableMapper> {
+pub struct X86UserCopyBackend<'a, M: UserMemoryView> {
     mapper: &'a M,
     physical_memory: PhysicalMemoryMapping,
 }
 
-impl<'a, M: PageTableMapper> X86UserCopyBackend<'a, M> {
+impl<'a, M: UserMemoryView> X86UserCopyBackend<'a, M> {
     pub const fn new(mapper: &'a M, physical_memory: PhysicalMemoryMapping) -> Self {
         Self { mapper, physical_memory }
     }
 }
 
-impl<M: PageTableMapper> UserCopyBackend for X86UserCopyBackend<'_, M> {
+impl<M: UserMemoryView> UserCopyBackend for X86UserCopyBackend<'_, M> {
     fn copy_from_user(&self, src: u64, dst: &mut [u8]) -> Result<(), UserReadError> {
         let mut copied = 0usize;
 
         while copied < dst.len() {
-            let virtual_address = src
-                .checked_add(copied as u64)
-                .ok_or(UserReadError::PageAddressOverflow)?;
-            let physical_address = self
-                .mapper
-                .translate(virtual_address)
-                .ok_or(UserReadError::Unmapped)?;
-            let kernel_address = self
-                .physical_memory
-                .translate(physical_address)
-                .ok_or(UserReadError::BackendFailure)?;
-
+            let virtual_address = src.checked_add(copied as u64).ok_or(UserReadError::PageAddressOverflow)?;
+            let physical_address = self.mapper.translate(virtual_address).ok_or(UserReadError::Unmapped)?;
+            let kernel_address = self.physical_memory.translate(physical_address).ok_or(UserReadError::BackendFailure)?;
             let page_offset = (virtual_address % PAGE_SIZE_4K) as usize;
             let remaining_in_page = PAGE_SIZE_4K as usize - page_offset;
             let chunk_len = remaining_in_page.min(dst.len() - copied);
@@ -51,7 +42,6 @@ impl<M: PageTableMapper> UserCopyBackend for X86UserCopyBackend<'_, M> {
                     chunk_len,
                 );
             }
-
             copied += chunk_len;
         }
 
@@ -62,65 +52,24 @@ impl<M: PageTableMapper> UserCopyBackend for X86UserCopyBackend<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::X86UserCopyBackend;
-    use crate::memory::{
-        MappingError, MappingFlags, MappingFlush, Page4K, PageAccess, PageTableMapper,
-        PhysicalMemoryMapping, VirtRange, KERNEL_SPACE_START, USER_SPACE_START,
-    };
+    use crate::memory::{PageAccess, PhysicalMemoryMapping, UserMemoryView, VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
     use super::super::PAGE_SIZE_4K;
 
-    struct Flush;
-    impl MappingFlush for Flush {
-        fn flush(self) {}
-    }
+    struct FakeMapper { physical: Option<u64> }
 
-    struct FakeMapper {
-        physical: Option<u64>,
-    }
-
-    impl PageTableMapper for FakeMapper {
-        type Flush = Flush;
-
-        fn allocate_frame(&mut self) -> Option<u64> { None }
-
-        fn map_page(
-            &mut self,
-            _: Page4K,
-            _: u64,
-            _: MappingFlags,
-        ) -> Result<Self::Flush, MappingError> {
-            unreachable!()
-        }
-
-        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), MappingError> {
-            unreachable!()
-        }
-
+    impl UserMemoryView for FakeMapper {
         fn translate(&self, _: u64) -> Option<u64> { self.physical }
-
-        fn page_access(&self, _: u64) -> PageAccess {
-            PageAccess::user_read_only()
-        }
-
-        fn address_space(&self) -> VirtRange {
-            VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap()
-        }
+        fn page_access(&self, _: u64) -> PageAccess { PageAccess::user_read_only() }
+        fn address_space(&self) -> VirtRange { VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap() }
     }
 
     #[test]
     fn rejects_direct_map_overflow_before_raw_copy() {
         let mapper = FakeMapper { physical: Some(u64::MAX) };
-        let backend = X86UserCopyBackend::new(
-            &mapper,
-            PhysicalMemoryMapping::new(1),
-        );
+        let backend = X86UserCopyBackend::new(&mapper, PhysicalMemoryMapping::new(1));
         let mut destination = [0u8; 1];
-
         assert_eq!(
-            crate::memory::UserCopyBackend::copy_from_user(
-                &backend,
-                USER_SPACE_START,
-                &mut destination,
-            ),
+            crate::memory::UserCopyBackend::copy_from_user(&backend, USER_SPACE_START, &mut destination),
             Err(crate::memory::UserReadError::BackendFailure)
         );
     }
