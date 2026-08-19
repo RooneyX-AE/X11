@@ -6,8 +6,8 @@
 
 use alloc::boxed::Box;
 
-use crate::process::{ProcessId, ProcessImage, ProcessManager};
-use crate::scheduler::{Priority, TaskId};
+use crate::process::{ProcessId, ProcessImage, ProcessManager, ProcessState};
+use crate::scheduler::{Priority, TaskId, TaskState};
 
 use super::runtime::{KernelRuntime, RuntimeError};
 use super::user_execution::{UserExecutionBinding, UserExecutionRegistry, UserExecutionRegistryError};
@@ -29,6 +29,7 @@ pub enum SystemRuntimeError {
     AddressSpaceMismatch,
     NoCurrentProcess,
     TaskBindingMismatch,
+    SchedulerTaskNotReady,
 }
 
 impl SystemRuntime {
@@ -47,6 +48,19 @@ impl SystemRuntime {
     pub const fn runtime_mut(&mut self) -> &mut KernelRuntime { &mut self.runtime }
     pub const fn userspace(&self) -> &UserExecutionRegistry { &self.userspace }
 
+    /// Binds the stable system owner to the bootstrap CPU. The contained
+    /// `KernelRuntime` keeps its existing timer/preemption binding; syscall
+    /// entry receives the higher-level system owner separately.
+    pub unsafe fn bind_cpu(&mut self) -> Result<(), SystemRuntimeError> {
+        unsafe { self.runtime.bind_cpu().map_err(SystemRuntimeError::Runtime)?; }
+        unsafe {
+            crate::arch::x86_64::cpu_local::local()
+                .bind_system_runtime(self as *mut Self as *mut ())
+                .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        }
+        Ok(())
+    }
+
     /// Adopts an already-prepared ring3 launch into the scheduler and userspace
     /// registry. The process is not started here, preserving Ready -> Running
     /// as an explicit lifecycle transition.
@@ -62,7 +76,7 @@ impl SystemRuntime {
         }
 
         let scheduler = &mut self.runtime.manager_mut().scheduler;
-        let task = scheduler.create_task(priority);
+        let task = scheduler.create_user_task(priority);
         let execution = match scheduler.attach_execution(task) {
             Ok(handle) => handle,
             Err(error) => {
@@ -104,16 +118,37 @@ impl SystemRuntime {
         Ok((spawned.id(), task))
     }
 
-    pub fn start_current(&mut self, process: ProcessId) -> Result<(), SystemRuntimeError> {
+    /// Starts exactly one userspace process and enters ring3. All identity and
+    /// scheduler invariants are checked before changing lifecycle state.
+    ///
+    /// # Safety
+    /// `bind_cpu()` must have succeeded, the prepared address space must remain
+    /// valid, and the caller must be at the kernel boundary from which the
+    /// process is allowed to become the current CPU owner.
+    pub unsafe fn start_user(&mut self, process: ProcessId) -> Result<(), SystemRuntimeError> {
         let binding = self.processes.binding(process).map_err(SystemRuntimeError::Process)?
             .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
-        let current = self.runtime.manager().scheduler.current().ok_or(SystemRuntimeError::TaskBindingMismatch)?;
-        if binding.task() != current {
+        let user_binding = self.userspace.get(binding.task()).ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        if user_binding.process() != process || user_binding.address_space() != binding.address_space() {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
+        if self.processes.state(process).map_err(SystemRuntimeError::Process)? != ProcessState::Ready {
+            return Err(SystemRuntimeError::Process(crate::process::ProcessManagerError::InvalidTransition));
+        }
+        let scheduler = &mut self.runtime.manager_mut().scheduler;
+        if scheduler.state(binding.task()) != Some(TaskState::Ready) || scheduler.next_ready() != Some(binding.task()) {
+            return Err(SystemRuntimeError::SchedulerTaskNotReady);
+        }
+
         self.processes.start(process).map_err(SystemRuntimeError::Process)?;
+        let decision = scheduler.schedule_next();
+        if decision.next != Some(binding.task()) || scheduler.current() != Some(binding.task()) {
+            return Err(SystemRuntimeError::TaskBindingMismatch);
+        }
+
         self.current_process = Some(process);
-        Ok(())
+        unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(binding.task())); }
+        unsafe { crate::arch::x86_64::user_activation::activate_and_enter_user(user_binding.launch()) };
     }
 
     pub fn current_process(&self) -> Option<ProcessId> { self.current_process }
