@@ -164,6 +164,7 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
             user: flags.contains(PageTableFlags::USER_ACCESSIBLE),
             readable: flags.contains(PageTableFlags::PRESENT),
             writable: flags.contains(PageTableFlags::WRITABLE),
+            executable: !flags.contains(PageTableFlags::NO_EXECUTE),
         }
     }
 
