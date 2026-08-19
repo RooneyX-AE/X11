@@ -5,6 +5,7 @@
 
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReturnState {
     rip: u64,
@@ -48,6 +49,7 @@ impl ReturnState {
     }
 }
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterruptedState {
     registers: SavedRegisters,
@@ -78,6 +80,10 @@ impl InterruptedState {
                 || (self.return_state.rsp().is_some() && self.return_state.ss().is_some()))
     }
 }
+
+const _: () = assert!(core::mem::size_of::<ReturnState>() == 48);
+const _: () = assert!(core::mem::offset_of!(InterruptedState, registers) == 0);
+const _: () = assert!(core::mem::offset_of!(InterruptedState, return_state) == 120);
 
 #[cfg(test)]
 mod tests {
