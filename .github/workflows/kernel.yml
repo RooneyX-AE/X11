@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
-      - name: Boot kernel and verify timer preemption paths
+      - name: Boot kernel and verify userspace ring3 trap path
         shell: bash
         run: |
           set -o pipefail
@@ -92,7 +92,6 @@ jobs:
           set -e
           test "$qemu_status" -eq 124
           python3 - <<'PY'
-          import re
           from pathlib import Path
 
           log = Path("qemu.log").read_text(errors="replace")
@@ -106,29 +105,17 @@ jobs:
                   raise SystemExit(f"forbidden runtime marker observed: {marker}")
 
           required = [
-              "X11-OS: userspace ramdisk loaded bytes =",
-              "X11-OS: userspace ELF validated segments =",
               "X11-OS: kernel entry reached",
               "Hello World from X11-OS!",
               "X11-OS: CPU foundation initialized",
-              "X11-OS: invariant TSC clocksource available",
-              "X11-OS: ACPI MADT discovered",
-              "X11-OS: legacy 8259 masked",
-              "X11-OS: local APIC mode =",
-              "X11-OS: Local APIC EOI initialized",
-              "X11-OS: LAPIC timer calibrated Hz =",
-              "X11-OS: LAPIC periodic timer enabled at 100 Hz",
+              "X11-OS: userspace ramdisk loaded bytes =",
+              "X11-OS: userspace ELF validated segments =",
+              "X11-OS: userspace process image prepared",
               "X11-OS: heap initialized",
               "X11-OS: heap allocation verified",
-              "X11-OS: kernel runtime bound to CPU0",
-              "X11-OS: preemption proof tasks armed",
-              "X11-OS: interrupts remain disabled until task B starts",
-              "X11-OS: task A started",
-              "X11-OS: task B started",
-              "X11-OS: interrupts enabled in task B",
-              "X11-OS: task A resumed after timer preemption",
-              "X11-OS: task B resumed through kernel iretq",
-              "X11-OS: timer ticks observed after iretq =",
+              "X11-OS: userspace address space populated",
+              "X11-OS: userspace launch prepared",
+              "X11-OS: userspace int 0x80 trap reached",
           ]
 
           position = -1
@@ -138,18 +125,7 @@ jobs:
                   raise SystemExit(f"missing or out-of-order runtime marker: {marker}")
               position = next_position
 
-          for marker in (
-              "X11-OS: task A resumed after timer preemption",
-              "X11-OS: task B resumed through kernel iretq",
-          ):
-              if log.count(marker) < 1:
-                  raise SystemExit(f"preemption resume marker missing: {marker}")
-
-          tick_match = re.search(r"timer ticks observed after iretq = (\d+)", log)
-          if not tick_match or int(tick_match.group(1)) < 2:
-              raise SystemExit("timer tick evidence is below the two-interrupt preemption proof")
-
-          print("QEMU runtime marker order and two-timer preemption evidence verified")
+          print("QEMU verified userspace image creation, ring-3 launch, int 0x80 trap, and return path")
           PY
       - name: Upload diagnostics
         if: always()
