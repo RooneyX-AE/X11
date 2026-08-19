@@ -244,20 +244,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         _ => None,
     };
 
-    let _prepared_user_launch = prepared_user_launch;
-
-    let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
-    unsafe { runtime.bind_cpu().expect("runtime must bind to bootstrap CPU"); }
-    let _task_a = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_a).expect("task A must spawn");
-    let _task_b = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_b).expect("task B must spawn");
-
-    serial::write_str("X11-OS: kernel runtime bound to CPU0\r\n");
-    serial::write_str("X11-OS: preemption proof tasks armed\r\n");
-    serial::write_str("X11-OS: interrupts remain disabled until task B starts\r\n");
-
-    unsafe { runtime.dispatch_once().expect("initial runtime dispatch must succeed"); }
-
-    loop { core::hint::spin_loop(); }
+    match prepared_user_launch {
+        Some(prepared) => unsafe { arch::x86_64::user_activation::activate_and_enter_user(prepared) },
+        None => {
+            serial::write_str("X11-OS: userspace activation skipped\r\n");
+            let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
+            unsafe { runtime.bind_cpu().expect("runtime must bind to bootstrap CPU"); }
+            let _task_a = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_a).expect("task A must spawn");
+            let _task_b = runtime.spawn(scheduler::Priority::DEFAULT, preemption_task_b).expect("task B must spawn");
+            serial::write_str("X11-OS: kernel runtime bound to CPU0\r\n");
+            serial::write_str("X11-OS: preemption proof tasks armed\r\n");
+            serial::write_str("X11-OS: interrupts remain disabled until task B starts\r\n");
+            unsafe { runtime.dispatch_once().expect("initial runtime dispatch must succeed"); }
+            loop { core::hint::spin_loop(); }
+        }
+    }
 }
 
 #[panic_handler]
