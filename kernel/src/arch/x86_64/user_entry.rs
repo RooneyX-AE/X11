@@ -4,7 +4,6 @@
 //! performs no address-space setup, permission checks, or policy decisions.
 //! Those belong to the process/address-space layers.
 
-use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use super::user_return::UserReturnFrame;
 
 /// Enter CPL3 from a kernel-created `iretq` frame.
@@ -24,7 +23,8 @@ pub unsafe extern "sysv64" fn enter_user(frame: *const UserReturnFrame) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{USER_CODE_SELECTOR, USER_DATA_SELECTOR, UserReturnFrame};
+    use super::UserReturnFrame;
+    use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
     use crate::memory::{user_stack_range, USER_SPACE_START};
     use crate::process::InitialContext;
 
