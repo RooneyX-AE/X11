@@ -47,9 +47,9 @@ pub mod paging;
 pub mod pic;
 
 fn enable_nxe() {
-    let max_extended = unsafe { core::arch::x86_64::__cpuid(0x8000_0000) };
+    let max_extended = core::arch::x86_64::__cpuid(0x8000_0000);
     if max_extended.eax < 0x8000_0001 { panic!("x86_64 extended CPUID leaf is unavailable"); }
-    let features = unsafe { core::arch::x86_64::__cpuid(0x8000_0001) };
+    let features = core::arch::x86_64::__cpuid(0x8000_0001);
     if features.edx & (1 << 20) == 0 { panic!("CPU does not support NX page protection"); }
     use x86_64::registers::model_specific::{Efer, EferFlags};
     if !Efer::read().contains(EferFlags::NO_EXECUTE_ENABLE) {
