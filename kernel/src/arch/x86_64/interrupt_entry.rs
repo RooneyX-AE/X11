@@ -62,9 +62,9 @@ extern "C" fn syscall_entry_rust(registers: *mut SavedRegisters, return_frame: *
         None => Err(crate::syscall::SyscallError::NotImplemented),
     };
 
-    let return_value = syscall_result_abi_value(result);
-    registers.rax = return_value;
-    crate::arch::x86_64::idt::record_user_trap(return_value < u64::MAX - 16);
+    let success = result.is_ok();
+    registers.rax = syscall_result_abi_value(result);
+    crate::arch::x86_64::idt::record_user_trap(success);
 }
 
 #[unsafe(naked)]
