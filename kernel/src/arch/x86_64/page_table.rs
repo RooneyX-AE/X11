@@ -10,7 +10,7 @@ use x86_64::PhysAddr;
 use crate::arch::x86_64::paging;
 use crate::memory::{
     EarlyFrameAllocator, FrameAllocator as X11FrameAllocator, MappingError, MappingFlags,
-    MappingFlush, Page4K, PageAccess, PageTableMapper, VirtRange,
+    MappingFlush, Page4K, PageAccess, PageTableMapper, UserMemoryView, VirtRange,
 };
 
 pub struct X86Flush(MapperFlush<Size4KiB>);
@@ -124,6 +124,26 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
     }
 }
 
+impl UserMemoryView for X86PageTableMapper<'_, '_> {
+    fn translate(&self, virtual_address: u64) -> Option<u64> {
+        if !self.address_space.contains(virtual_address) { return None; }
+        self.inner.translate_addr(x86_64::VirtAddr::new(virtual_address)).map(|address| address.as_u64())
+    }
+
+    fn page_access(&self, virtual_address: u64) -> PageAccess {
+        let Some(flags) = self.mapped_flags(virtual_address) else { return PageAccess::unmapped(); };
+        PageAccess {
+            mapped: flags.contains(PageTableFlags::PRESENT),
+            user: flags.contains(PageTableFlags::USER_ACCESSIBLE),
+            readable: flags.contains(PageTableFlags::PRESENT),
+            writable: flags.contains(PageTableFlags::WRITABLE),
+            executable: !flags.contains(PageTableFlags::NO_EXECUTE),
+        }
+    }
+
+    fn address_space(&self) -> VirtRange { self.address_space }
+}
+
 impl PageTableMapper for X86PageTableMapper<'_, '_> {
     type Flush = X86Flush;
 
@@ -153,24 +173,6 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         let (frame, flush) = self.inner.unmap(target).map_err(unmap_error)?;
         Ok((frame.start_address().as_u64(), X86Flush(flush)))
     }
-
-    fn translate(&self, virtual_address: u64) -> Option<u64> {
-        if !self.address_space.contains(virtual_address) { return None; }
-        self.inner.translate_addr(x86_64::VirtAddr::new(virtual_address)).map(|address| address.as_u64())
-    }
-
-    fn page_access(&self, virtual_address: u64) -> PageAccess {
-        let Some(flags) = self.mapped_flags(virtual_address) else { return PageAccess::unmapped(); };
-        PageAccess {
-            mapped: flags.contains(PageTableFlags::PRESENT),
-            user: flags.contains(PageTableFlags::USER_ACCESSIBLE),
-            readable: flags.contains(PageTableFlags::PRESENT),
-            writable: flags.contains(PageTableFlags::WRITABLE),
-            executable: !flags.contains(PageTableFlags::NO_EXECUTE),
-        }
-    }
-
-    fn address_space(&self) -> VirtRange { self.address_space }
 }
 
 #[cfg(test)]
