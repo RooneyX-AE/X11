@@ -129,6 +129,11 @@ mod tests {
         }
     }
 
+    struct FailingSink;
+    impl WriteSink for FailingSink {
+        fn write(&mut self, _: &[u8]) -> Result<(), SyscallError> { Err(SyscallError::WriteFailed) }
+    }
+
     #[test]
     fn decodes_shared_syscall_numbers() {
         assert_eq!(SyscallRequest::new(Syscall::Write.number(), 1, 2, 3).syscall(), Some(Syscall::Write));
@@ -155,6 +160,17 @@ mod tests {
         assert_eq!(result, Ok(300));
         assert_eq!(sink.0.len(), 300);
         assert!(sink.0.iter().all(|byte| *byte == b'A'));
+    }
+
+    #[test]
+    fn write_propagates_sink_failure_without_claiming_success() {
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        let backend = FakeBackend;
+        let mut sink = FailingSink;
+        assert_eq!(
+            dispatch_with_memory(SyscallRequest::write(UserSlice { ptr: USER_SPACE_START, len: 4 }), &mapper, &backend, &mut sink),
+            Err(SyscallError::WriteFailed)
+        );
     }
 
     #[test]
