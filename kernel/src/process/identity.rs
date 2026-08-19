@@ -30,7 +30,10 @@ impl ProcessExecutionBinding {
         execution: ExecutionHandle,
         address_space: AddressSpaceId,
     ) -> Option<Self> {
-        if execution.task_id() != task { return None; }
+        let execution_task = execution.task_id();
+        if execution_task.index() != task.index() || execution_task.generation() != task.generation() {
+            return None;
+        }
         Some(Self { process, task, execution, address_space })
     }
 
