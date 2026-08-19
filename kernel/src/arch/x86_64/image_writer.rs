@@ -28,17 +28,20 @@ impl X86ImagePageWriter {
         }
 
         let offset = page_offset as u64;
-        let length = length as u64;
+        let length_u64 = length as u64;
         let physical_start = physical_address
             .checked_add(offset)
             .ok_or(ImageWriteError::AddressOverflow)?;
         let physical_end = physical_start
-            .checked_add(length)
+            .checked_add(length_u64)
             .ok_or(ImageWriteError::AddressOverflow)?;
         let virtual_start = self.mapping.translate(physical_start).ok_or(ImageWriteError::AddressOverflow)?;
         let virtual_end = self.mapping.translate(physical_end).ok_or(ImageWriteError::AddressOverflow)?;
 
-        if virtual_end < virtual_start || virtual_start > usize::MAX as u64 {
+        if virtual_end < virtual_start
+            || virtual_start > usize::MAX as u64
+            || virtual_end > (usize::MAX as u64).saturating_add(1)
+        {
             return Err(ImageWriteError::AddressOverflow);
         }
 
