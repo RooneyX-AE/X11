@@ -11,7 +11,7 @@ mod user;
 mod user_copy;
 mod user_stack;
 
-pub use address_space::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
+pub use address_space::{UserAddressSpaceLayout, VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
 pub use boot::MemorySummary;
 pub use frame::{EarlyFrameAllocator, FrameAllocator};
 pub use page::{Page4K, PAGE_SIZE_4K};
