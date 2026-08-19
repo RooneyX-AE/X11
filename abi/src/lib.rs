@@ -18,6 +18,15 @@ impl Syscall {
     pub const fn number(self) -> u64 {
         self as u64
     }
+
+    pub const fn from_number(number: u64) -> Option<Self> {
+        match number {
+            0 => Some(Self::Write),
+            1 => Some(Self::Exit),
+            2 => Some(Self::Yield),
+            _ => None,
+        }
+    }
 }
 
 #[repr(C)]
@@ -49,6 +58,14 @@ mod tests {
         assert_eq!(Syscall::Write.number(), 0);
         assert_eq!(Syscall::Exit.number(), 1);
         assert_eq!(Syscall::Yield.number(), 2);
+    }
+
+    #[test]
+    fn syscall_numbers_decode_from_abi_contract() {
+        assert_eq!(Syscall::from_number(0), Some(Syscall::Write));
+        assert_eq!(Syscall::from_number(1), Some(Syscall::Exit));
+        assert_eq!(Syscall::from_number(2), Some(Syscall::Yield));
+        assert_eq!(Syscall::from_number(u64::MAX), None);
     }
 
     #[test]
