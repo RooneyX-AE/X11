@@ -67,22 +67,36 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     serial::write_str("X11-OS: kernel entry reached\r\n");
 
-    match ramdisk::bytes(boot_info) {
+    let userspace_image = match ramdisk::bytes(boot_info) {
         Ok(bytes) => {
             serial::write_str("X11-OS: userspace ramdisk loaded bytes = ");
             serial::write_usize(bytes.len());
             serial::write_str("\r\n");
-            match process::ElfImage::parse(bytes) {
+
+            let address_space = process::AddressSpaceSpec::new(
+                process::AddressSpaceId::new(1).expect("first address-space id must be non-zero"),
+            );
+            match process::build_process_image(bytes, address_space) {
                 Ok(image) => {
                     serial::write_str("X11-OS: userspace ELF validated segments = ");
-                    serial::write_usize(image.segment_count());
+                    serial::write_usize(image.load_plan().count());
                     serial::write_str("\r\n");
+                    serial::write_str("X11-OS: userspace process image prepared\r\n");
+                    Some(image)
                 }
-                Err(_) => serial::write_str("X11-OS: userspace ELF validation failed\r\n"),
+                Err(_) => {
+                    serial::write_str("X11-OS: userspace process image preparation failed\r\n");
+                    None
+                }
             }
         }
-        Err(_) => serial::write_str("X11-OS: userspace ramdisk unavailable\r\n"),
-    }
+        Err(_) => {
+            serial::write_str("X11-OS: userspace ramdisk unavailable\r\n");
+            None
+        }
+    };
+
+    let _userspace_image = userspace_image;
 
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
