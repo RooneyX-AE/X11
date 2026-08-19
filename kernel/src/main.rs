@@ -96,8 +96,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     };
 
-    let _userspace_image = userspace_image;
-
     arch::x86_64::init();
     serial::write_str("X11-OS: CPU foundation initialized\r\n");
 
@@ -210,6 +208,37 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
         }
     }
+
+    let prepared_userspace = match (userspace_image, physical_mapping) {
+        (Some(image), Some(mapping)) => match ramdisk::bytes(boot_info) {
+            Ok(bytes) => match process::ElfImage::parse(bytes) {
+                Ok(elf) => match unsafe {
+                    arch::x86_64::process_loader::load_process_image(mapping, &mut frame_allocator, image, elf)
+                } {
+                    Ok((root, populated)) => {
+                        serial::write_str("X11-OS: userspace address space mapped\r\n");
+                        serial::write_str("X11-OS: userspace image populated\r\n");
+                        Some((root, populated))
+                    }
+                    Err(_) => {
+                        serial::write_str("X11-OS: userspace address-space load failed\r\n");
+                        None
+                    }
+                },
+                Err(_) => {
+                    serial::write_str("X11-OS: userspace ELF reparse failed\r\n");
+                    None
+                }
+            },
+            Err(_) => {
+                serial::write_str("X11-OS: userspace ramdisk unavailable during load\r\n");
+                None
+            }
+        },
+        _ => None,
+    };
+
+    let _prepared_userspace = prepared_userspace;
 
     let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
     unsafe { runtime.bind_cpu().expect("runtime must bind to bootstrap CPU"); }
