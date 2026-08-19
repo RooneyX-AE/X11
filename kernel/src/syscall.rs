@@ -75,7 +75,7 @@ pub fn sys_write_checked<M: PageTableMapper>(mapper: &M, slice: UserSlice) -> Sy
 #[cfg(test)]
 mod tests {
     use super::{dispatch, sys_write_checked, SyscallError, SyscallRequest};
-    use crate::memory::{KERNEL_SPACE_START, Page4K, PageAccess, PageTableMapper, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
+    use crate::memory::{KERNEL_SPACE_START, Page4K, PageAccess, PageTableMapper, PhysRange, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
     use x11_os_abi::{Syscall, UserSlice};
 
     struct Flush;
@@ -89,7 +89,8 @@ mod tests {
 
     impl PageTableMapper for FakeMapper {
         type Flush = Flush;
-        fn map_page(&mut self, _: Page4K, _: u64) -> Result<Self::Flush, crate::memory::MappingError> { unreachable!() }
+        fn allocate_frame(&mut self) -> Option<PhysRange> { None }
+        fn map_page(&mut self, _: Page4K, _: u64, _: crate::memory::MappingFlags) -> Result<Self::Flush, crate::memory::MappingError> { unreachable!() }
         fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), crate::memory::MappingError> { unreachable!() }
         fn translate(&self, _: u64) -> Option<u64> { None }
         fn page_access(&self, _: u64) -> PageAccess { self.access }
