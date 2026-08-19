@@ -139,12 +139,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let prepared_user_launch = match (userspace_image, physical_mapping) {
         (Some((bytes, image)), Some(mapping)) => match process::ElfImage::parse(bytes) {
             Ok(elf) => match unsafe { arch::x86_64::process_loader::load_process_image(mapping, &mut frame_allocator, image, elf) } {
-                Ok((root, populated)) => match process::UserLaunchPlan::from_populated(populated) {
-                    Ok(plan) => match arch::x86_64::user_launch::prepare_launch(root, plan) {
-                        Ok(prepared) => { serial::write_str("X11-OS: userspace address space populated\r\nX11-OS: userspace launch prepared\r\n"); Some((populated.image(), prepared)) }
-                        Err(_) => { serial::write_str("X11-OS: userspace launch preparation failed\r\n"); None }
-                    },
-                    Err(_) => { serial::write_str("X11-OS: userspace launch plan validation failed\r\n"); None }
+                Ok((root, populated)) => {
+                    let process_image = populated.image();
+                    match process::UserLaunchPlan::from_populated(populated) {
+                        Ok(plan) => match arch::x86_64::user_launch::prepare_launch(root, plan) {
+                            Ok(prepared) => { serial::write_str("X11-OS: userspace address space populated\r\nX11-OS: userspace launch prepared\r\n"); Some((process_image, prepared)) }
+                            Err(_) => { serial::write_str("X11-OS: userspace launch preparation failed\r\n"); None }
+                        },
+                        Err(_) => { serial::write_str("X11-OS: userspace launch plan validation failed\r\n"); None }
+                    }
                 },
                 Err(_) => { serial::write_str("X11-OS: userspace address-space construction failed\r\n"); None }
             },
