@@ -25,6 +25,7 @@ pub mod preemption_plan;
 pub mod process_loader;
 pub mod process_runtime;
 pub mod runtime;
+pub mod syscall_return;
 pub mod system_runtime;
 pub mod tsc;
 pub mod user_activation;
