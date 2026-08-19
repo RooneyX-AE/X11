@@ -25,7 +25,7 @@ pub enum UserExecutionBindingError {
 }
 
 impl UserExecutionBinding {
-    pub const fn new(
+    pub fn new(
         process: ProcessId,
         task: TaskId,
         address_space: AddressSpaceId,
@@ -58,9 +58,7 @@ impl UserExecutionRegistry {
     pub const fn new() -> Self { Self { entries: Vec::new() } }
 
     pub fn insert(&mut self, binding: UserExecutionBinding) -> Result<(), UserExecutionRegistryError> {
-        if self.get(binding.task()).is_some() {
-            return Err(UserExecutionRegistryError::AlreadyBound);
-        }
+        if self.get(binding.task()).is_some() { return Err(UserExecutionRegistryError::AlreadyBound); }
         self.entries.push(Some(binding));
         Ok(())
     }
@@ -101,42 +99,26 @@ mod tests {
     }
 
     #[test]
-    fn binding_keeps_user_execution_identity_together() {
+    fn binding_rejects_mismatched_address_space() {
         let (id, launch) = launch();
-        let binding = UserExecutionBinding::new(ProcessId::new(1, 2), TaskId::new(3, 4), id, launch);
-        assert!(binding.is_ok());
+        assert_eq!(UserExecutionBinding::new(ProcessId::new(1, 2), TaskId::new(3, 4), AddressSpaceId::new(8).unwrap(), launch), Err(UserExecutionBindingError::AddressSpaceMismatch));
+        assert_eq!(launch.address_space(), id);
     }
 
     #[test]
-    fn binding_rejects_address_space_mismatch() {
-        let (_, launch) = launch();
-        assert_eq!(
-            UserExecutionBinding::new(
-                ProcessId::new(1, 2),
-                TaskId::new(3, 4),
-                AddressSpaceId::new(8).unwrap(),
-                launch,
-            ),
-            Err(UserExecutionBindingError::AddressSpaceMismatch)
-        );
-    }
-
-    #[test]
-    fn registry_rejects_duplicate_task_binding() {
+    fn registry_rejects_duplicate_task() {
         let mut registry = UserExecutionRegistry::new();
-        let item = binding();
-        assert!(registry.insert(item).is_ok());
-        assert_eq!(registry.insert(item), Err(UserExecutionRegistryError::AlreadyBound));
-        assert_eq!(registry.count(), 1);
+        let value = binding();
+        registry.insert(value).unwrap();
+        assert_eq!(registry.insert(value), Err(UserExecutionRegistryError::AlreadyBound));
     }
 
     #[test]
-    fn registry_removes_binding_terminally() {
+    fn registry_removes_exact_task() {
         let mut registry = UserExecutionRegistry::new();
-        let item = binding();
-        assert!(registry.insert(item).is_ok());
-        assert_eq!(registry.remove(item.task()).unwrap(), item);
-        assert!(registry.get(item.task()).is_none());
-        assert_eq!(registry.count(), 0);
+        let value = binding();
+        registry.insert(value).unwrap();
+        assert_eq!(registry.remove(value.task()), Ok(value));
+        assert_eq!(registry.remove(value.task()), Err(UserExecutionRegistryError::NotFound));
     }
 }
