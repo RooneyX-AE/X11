@@ -44,11 +44,8 @@ impl ProcessSyscallControl for ProcessRuntimeOwner<'_> {
     fn yield_now(&mut self) -> Result<(), SyscallError> { self.request_yield().map_err(Self::syscall_error) }
 }
 
-/// Creates a process, creates its scheduler identity, binds the user iretq
-/// launch state, and only then exposes the task to the ready queue.
-///
-/// The caller owns the returned UserExecutionBinding and may install it in a
-/// long-lived userspace execution registry. No CPU switch occurs here.
+/// Creates a userspace process and exposes its runnable identity only after
+/// process identity, scheduler identity, and iretq launch state agree.
 pub fn spawn_user_ready(
     processes: &mut ProcessManager,
     scheduler: &mut Scheduler,
@@ -61,7 +58,7 @@ pub fn spawn_user_ready(
         return Err(UserSpawnError::AddressSpaceMismatch);
     }
 
-    let task = scheduler.create_task(priority);
+    let task = scheduler.create_user_task(priority);
     let execution = match scheduler.attach_execution(task) {
         Ok(handle) => handle,
         Err(error) => {
@@ -141,7 +138,7 @@ mod tests {
     use crate::arch::x86_64::user_launch::prepare_launch;
     use crate::memory::{USER_SPACE_START, user_stack_range};
     use crate::process::{AddressSpaceId, AddressSpaceSpec, ElfImage, LoadPlan, ProcessImage, ProcessManager, ProcessState, UserLaunchPlan, UserStackPlan};
-    use crate::scheduler::{Priority, Scheduler, TaskId};
+    use crate::scheduler::{Priority, Scheduler, TaskKind, TaskId};
     use crate::syscall::{ProcessSyscallControl, SyscallError};
 
     fn image(address_space: AddressSpaceId) -> ProcessImage {
@@ -152,13 +149,11 @@ mod tests {
         let root = AddressSpaceRoot::from_physical_address(0x1234_5000).unwrap(); let stack=user_stack_range().unwrap(); let plan=UserLaunchPlan { address_space, entry: USER_SPACE_START+0x1000, stack_pointer: stack.end() }; prepare_launch(root,plan).unwrap()
     }
 
-    extern "C" fn never_returns() -> ! { loop {} }
-
     #[test]
     fn spawn_user_ready_is_transactional_and_ready_only_at_end() {
         let address_space=AddressSpaceId::new(7).unwrap(); let mut processes=ProcessManager::new(); let mut scheduler=Scheduler::new();
         let image=image(address_space); let (process,task,binding)=spawn_user_ready(&mut processes,&mut scheduler,image,launch(address_space),Priority::DEFAULT).unwrap();
-        assert_eq!(processes.state(process),Ok(ProcessState::Ready)); assert_eq!(scheduler.state(task),Some(crate::scheduler::TaskState::Ready)); assert_eq!(binding.task(),task); assert_eq!(binding.address_space(),address_space);
+        assert_eq!(scheduler.task_kind(task),Some(TaskKind::Userspace)); assert_eq!(processes.state(process),Ok(ProcessState::Ready)); assert_eq!(scheduler.state(task),Some(crate::scheduler::TaskState::Ready)); assert_eq!(binding.task(),task); assert_eq!(binding.address_space(),address_space);
     }
 
     #[test]
@@ -174,7 +169,4 @@ mod tests {
 
     #[test]
     fn syscall_control_maps_unbound_yield() { let mut processes=ProcessManager::new(); let _=processes.register_ready(image(AddressSpaceId::new(1).unwrap())).unwrap(); let mut runtime=crate::arch::x86_64::runtime::KernelRuntime::new(); let mut owner=ProcessRuntimeOwner::new(&mut processes,&mut runtime); assert_eq!(owner.yield_now(),Err(SyscallError::InvalidArguments)); }
-
-    #[allow(dead_code)] extern "C" fn _kernel_entry() -> ! { never_returns() }
-    #[allow(dead_code)] const _: fn(TaskId) -> TaskId = |id| id;
 }
