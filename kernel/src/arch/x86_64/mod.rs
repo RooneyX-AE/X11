@@ -37,7 +37,29 @@ pub mod page_table;
 pub mod paging;
 pub mod pic;
 
+fn enable_nxe() {
+    let max_extended = unsafe { core::arch::x86_64::__cpuid(0x8000_0000) };
+    if max_extended.eax < 0x8000_0001 {
+        panic!("x86_64 extended CPUID leaf is unavailable");
+    }
+
+    let features = unsafe { core::arch::x86_64::__cpuid(0x8000_0001) };
+    if features.edx & (1 << 20) == 0 {
+        panic!("CPU does not support NX page protection");
+    }
+
+    use x86_64::registers::model_specific::{Efer, EferFlags};
+    if !Efer::read().contains(EferFlags::NO_EXECUTE_ENABLE) {
+        // SAFETY: only the NXE bit is changed, while x86_64::Efer::update
+        // preserves all other EFER bits and reserved fields.
+        unsafe {
+            Efer::update(|flags| flags.insert(EferFlags::NO_EXECUTE_ENABLE));
+        }
+    }
+}
+
 pub fn init() {
+    enable_nxe();
     gdt::init();
     idt::init();
 }
