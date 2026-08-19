@@ -20,6 +20,7 @@ pub struct SystemRuntime {
     runtime: Box<KernelRuntime>,
     userspace: UserExecutionRegistry,
     current_process: Option<ProcessId>,
+    pending_exit: Option<(ProcessId, TaskId, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +45,7 @@ impl SystemRuntime {
             runtime: KernelRuntime::new(),
             userspace: UserExecutionRegistry::new(),
             current_process: None,
+            pending_exit: None,
         })
     }
 
@@ -52,6 +54,7 @@ impl SystemRuntime {
     pub const fn runtime(&self) -> &KernelRuntime { &self.runtime }
     pub const fn runtime_mut(&mut self) -> &mut KernelRuntime { &mut self.runtime }
     pub const fn userspace(&self) -> &UserExecutionRegistry { &self.userspace }
+    pub const fn pending_exit(&self) -> Option<(ProcessId, TaskId, u64)> { self.pending_exit }
 
     pub unsafe fn bind_cpu(&mut self) -> Result<(), SystemRuntimeError> {
         unsafe { self.runtime.bind_cpu().map_err(SystemRuntimeError::Runtime)?; }
@@ -132,6 +135,7 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::SchedulerTaskNotReady);
         }
 
+        self.pending_exit = None;
         self.processes.start(process).map_err(SystemRuntimeError::Process)?;
         let decision = scheduler.schedule_next();
         if decision.next != Some(binding.task()) || scheduler.current() != Some(binding.task()) {
@@ -151,6 +155,7 @@ impl SystemRuntime {
     }
 
     fn current_binding_checked(&self) -> Result<UserExecutionBinding, SyscallError> {
+        if self.pending_exit.is_some() { return Err(SyscallError::InvalidArguments); }
         let process = self.current_process.ok_or(SyscallError::InvalidArguments)?;
         let binding = self.processes.binding(process).map_err(|_| SyscallError::InvalidArguments)?
             .ok_or(SyscallError::InvalidArguments)?;
@@ -169,15 +174,7 @@ impl SystemRuntime {
 impl ProcessSyscallControl for SystemRuntime {
     fn exit(&mut self, code: u64) -> Result<(), SyscallError> {
         let user = self.current_binding_checked()?;
-        let process = user.process();
-        let task = user.task();
-        self.processes.exit(process).map_err(|_| SyscallError::InvalidArguments)?;
-        if !self.runtime.manager_mut().exit_current() {
-            return Err(SyscallError::InvalidArguments);
-        }
-        self.userspace.remove(task).map_err(|_| SyscallError::InvalidArguments)?;
-        self.current_process = None;
-        let _ = code;
+        self.pending_exit = Some((user.process(), user.task(), code));
         Ok(())
     }
 
