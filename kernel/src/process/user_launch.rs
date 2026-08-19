@@ -1,11 +1,12 @@
 //! Architecture-independent launch contract for a populated userspace image.
 //!
 //! A launch plan is only constructible after the address-space image has been
-//! populated. It contains the validated entry point and initial stack pointer,
-//! but no architecture-specific selector or assembly state.
+//! populated. It contains the validated address-space identity, entry point,
+//! and initial stack pointer, but no architecture-specific selector or
+//! assembly state.
 
 use super::PopulatedAddressSpace;
-use crate::memory::PAGE_SIZE_4K;
+use crate::memory::{AddressSpaceId, PAGE_SIZE_4K};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserLaunchError {
@@ -18,6 +19,7 @@ pub enum UserLaunchError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UserLaunchPlan {
+    address_space: AddressSpaceId,
     entry: u64,
     stack_pointer: u64,
 }
@@ -51,9 +53,14 @@ impl UserLaunchPlan {
             return Err(UserLaunchError::StackExecutable);
         }
 
-        Ok(Self { entry, stack_pointer })
+        Ok(Self {
+            address_space: image.image().address_space().id(),
+            entry,
+            stack_pointer,
+        })
     }
 
+    pub const fn address_space(self) -> AddressSpaceId { self.address_space }
     pub const fn entry(self) -> u64 { self.entry }
     pub const fn stack_pointer(self) -> u64 { self.stack_pointer }
 }
@@ -61,10 +68,13 @@ impl UserLaunchPlan {
 #[cfg(test)]
 mod tests {
     use super::UserLaunchPlan;
+    use crate::memory::AddressSpaceId;
 
     #[test]
     fn plan_accessors_are_stable() {
-        let plan = UserLaunchPlan { entry: 0x401000, stack_pointer: 0x7000_0000 };
+        let id = AddressSpaceId::new(7).unwrap();
+        let plan = UserLaunchPlan { address_space: id, entry: 0x401000, stack_pointer: 0x7000_0000 };
+        assert_eq!(plan.address_space(), id);
         assert_eq!(plan.entry(), 0x401000);
         assert_eq!(plan.stack_pointer(), 0x7000_0000);
     }
