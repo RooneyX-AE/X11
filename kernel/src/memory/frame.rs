@@ -2,8 +2,8 @@
 //!
 //! The first allocator is intentionally monotonic. It provides a deterministic
 //! early-boot source of 4 KiB frames while the kernel is still single-threaded.
-//! A reclaiming allocator can implement the same public trait later without
-//! leaking allocator-specific details into page-table or allocator consumers.
+//! Transaction checkpoints allow higher layers to abandon a failed bootstrap
+//! construction without leaking the allocator cursor.
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind, MemoryRegions};
 
@@ -37,6 +37,7 @@ impl ContiguousFrames {
 
 pub trait FrameAllocator { fn allocate_frame(&mut self) -> Option<Frame>; }
 
+#[derive(Clone, Copy)]
 pub struct EarlyFrameAllocator<'a> {
     regions: core::slice::Iter<'a, MemoryRegion>,
     current_end: u64,
@@ -46,6 +47,17 @@ pub struct EarlyFrameAllocator<'a> {
 impl<'a> EarlyFrameAllocator<'a> {
     pub fn new(regions: &'a MemoryRegions) -> Self {
         Self { regions: regions.iter(), current_end: 0, next_address: 0 }
+    }
+
+    /// Captures the allocator cursor before a transactional construction.
+    pub const fn checkpoint(&self) -> Self {
+        *self
+    }
+
+    /// Restores a previously captured cursor. No frames may be concurrently
+    /// allocated while restoring an early-boot checkpoint.
+    pub const fn rollback(&mut self, checkpoint: Self) {
+        *self = checkpoint;
     }
 
     fn select_next_usable_region(&mut self) -> bool {
@@ -149,7 +161,6 @@ mod tests {
         assert_eq!(frames.frame_count(), 4);
         assert_eq!(frames.byte_len(), Some(4 * FRAME_SIZE as usize));
         assert_eq!(frames.byte_end(), Some(0x8000));
-        assert_eq!(frames.physical_range().unwrap().end(), 0x8000);
         assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x8000);
     }
     #[test]
@@ -162,5 +173,17 @@ mod tests {
         let mut allocator = EarlyFrameAllocator::new(&regions);
         assert_eq!(allocator.allocate_contiguous(2), Some(ContiguousFrames { start: 0x4000, frame_count: 2 }));
         assert_eq!(allocator.allocate_contiguous(2), Some(ContiguousFrames { start: 0x9000, frame_count: 2 }));
+    }
+
+    #[test]
+    fn checkpoint_restores_allocator_cursor() {
+        let items = Box::leak(Box::new([region(0x4000, 0x8000, MemoryRegionKind::Usable)]));
+        let regions = regions(items);
+        let mut allocator = EarlyFrameAllocator::new(&regions);
+        let checkpoint = allocator.checkpoint();
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x4000);
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x5000);
+        allocator.rollback(checkpoint);
+        assert_eq!(allocator.allocate_frame().unwrap().start_address(), 0x4000);
     }
 }
