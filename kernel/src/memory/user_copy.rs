@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn rejects_kernel_only_mapping() {
         let mapper = FakeMapper {
-            access: PageAccess { mapped: true, user: false, readable: true, writable: true },
+            access: PageAccess { mapped: true, user: false, readable: true, writable: true, executable: false },
         };
         assert_eq!(
             validate_readable_range(&mapper, UserSlice { ptr: USER_SPACE_START, len: 1 }),
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn rejects_non_readable_user_mapping() {
         let mapper = FakeMapper {
-            access: PageAccess { mapped: true, user: true, readable: false, writable: true },
+            access: PageAccess { mapped: true, user: true, readable: false, writable: true, executable: false },
         };
         assert_eq!(
             validate_readable_range(&mapper, UserSlice { ptr: USER_SPACE_START, len: 1 }),
