@@ -4,8 +4,7 @@
 //! between a process and its execution binding. Scheduler policy, address-space
 //! mapping, and architecture execution remain separate.
 
-use super::{ProcessExecutionBinding, ProcessId, ProcessImage, ProcessState};
-use crate::memory::AddressSpaceId;
+use super::{AddressSpaceId, ProcessExecutionBinding, ProcessId, ProcessImage, ProcessState};
 use crate::scheduler::{ExecutionHandle, TaskId};
 
 pub const MAX_PROCESSES: usize = 256;
@@ -81,27 +80,16 @@ impl ProcessManager {
         slot.state = Some(ProcessState::Running); Ok(())
     }
 
-    /// Transitions two live userspace processes for a voluntary yield.
-    ///
-    /// The current process must be Running and the successor must be Ready.
-    /// Both lifecycle states are validated before either state is changed, and
-    /// the successor transition is rolled back if it unexpectedly fails.
     pub fn yield_to(&mut self, current: ProcessId, successor: ProcessId) -> Result<(), ProcessManagerError> {
         if current == successor { return Err(ProcessManagerError::InvalidTransition); }
         let current_index = current.index() as usize;
         let successor_index = successor.index() as usize;
         let current_slot = self.slot(current)?.state.ok_or(ProcessManagerError::InvalidProcess)?;
         let successor_slot = self.slot(successor)?.state.ok_or(ProcessManagerError::InvalidProcess)?;
-        if current_slot != ProcessState::Running || successor_slot != ProcessState::Ready {
-            return Err(ProcessManagerError::InvalidTransition);
-        }
-        if self.slot(current)?.binding.is_none() || self.slot(successor)?.binding.is_none() {
-            return Err(ProcessManagerError::BindingMismatch);
-        }
-
+        if current_slot != ProcessState::Running || successor_slot != ProcessState::Ready { return Err(ProcessManagerError::InvalidTransition); }
+        if self.slot(current)?.binding.is_none() || self.slot(successor)?.binding.is_none() { return Err(ProcessManagerError::BindingMismatch); }
         self.slots[current_index].state = Some(ProcessState::Ready);
-        let transitioned = self.slots[successor_index].state == Some(ProcessState::Ready);
-        if !transitioned {
+        if self.slots[successor_index].state != Some(ProcessState::Ready) {
             self.slots[current_index].state = Some(ProcessState::Running);
             return Err(ProcessManagerError::InvalidTransition);
         }
