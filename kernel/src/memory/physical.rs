@@ -1,42 +1,37 @@
 //! Physical-to-virtual mapping contract.
-//!
-//! The bootloader can create a direct mapping of physical memory. This module
-//! translates physical addresses through that offset without exposing the
-//! bootloader's `BootInfo` representation to paging and allocator consumers.
 
 use bootloader_api::BootInfo;
+use spin::Once;
 
 use super::address_space::VirtRange;
 use super::region::PhysRange;
 
-/// A kernel-owned physical-memory direct-map offset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PhysicalMemoryMapping {
-    offset: u64,
-}
+pub struct PhysicalMemoryMapping { offset: u64 }
+
+static GLOBAL_MAPPING: Once<PhysicalMemoryMapping> = Once::new();
 
 impl PhysicalMemoryMapping {
-    /// Creates a mapping from a physical-to-virtual base offset.
-    pub const fn new(offset: u64) -> Self {
-        Self { offset }
-    }
-
-    /// Extracts the physical-to-virtual base offset.
-    pub const fn offset(self) -> u64 {
-        self.offset
-    }
-
-    /// Creates a mapping when the bootloader supplied one.
+    pub const fn new(offset: u64) -> Self { Self { offset } }
+    pub const fn offset(self) -> u64 { self.offset }
     pub fn from_boot_info(boot_info: &BootInfo) -> Option<Self> {
         Option::<u64>::from(boot_info.physical_memory_offset).map(Self::new)
     }
 
-    /// Translates one physical address using checked arithmetic.
+    /// Installs the machine-wide bootloader direct-map contract exactly once.
+    pub fn install_global(self) -> Result<(), Self> {
+        match GLOBAL_MAPPING.call_once(|| self) {
+            installed if installed == self => Ok(()),
+            installed => Err(*installed),
+        }
+    }
+
+    pub fn global() -> Option<Self> { GLOBAL_MAPPING.get().copied() }
+
     pub const fn translate(self, physical_address: u64) -> Option<u64> {
         self.offset.checked_add(physical_address)
     }
 
-    /// Translates a physical range without wrapping its end address.
     pub fn translate_range(self, range: PhysRange) -> Option<VirtRange> {
         let start = self.translate(range.start())?;
         let end = self.translate(range.end())?;
