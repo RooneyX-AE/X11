@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use spin::Once;
 use x86_64::registers::control::Cr2;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode, PrivilegeLevel};
 use x86_64::VirtAddr;
 
 use crate::interrupts::{InterruptEvent, InterruptSource, TIMER_VECTOR};
@@ -16,16 +16,22 @@ use crate::interrupts::{InterruptEvent, InterruptSource, TIMER_VECTOR};
 use super::gdt::DOUBLE_FAULT_IST_INDEX;
 use super::interrupt_entry;
 
+pub const USER_TRAP_VECTOR: u8 = 0x80;
+
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 static LAST_PAGE_FAULT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 static TIMER_PENDING: AtomicBool = AtomicBool::new(false);
+static USER_TRAP_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
+        idt[USER_TRAP_VECTOR as usize]
+            .set_handler_fn(user_trap_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
@@ -42,6 +48,11 @@ pub fn init() {
 
 extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
     crate::serial::write_str("[x11-os] breakpoint exception\n");
+}
+
+extern "x86-interrupt" fn user_trap_handler(_stack_frame: InterruptStackFrame) {
+    USER_TRAP_COUNT.fetch_add(1, Ordering::AcqRel);
+    crate::serial::write_str("X11-OS: userspace int 0x80 trap reached\r\n");
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -85,4 +96,8 @@ pub fn timer_ticks() -> u64 {
 
 pub fn take_timer_pending() -> bool {
     TIMER_PENDING.swap(false, Ordering::AcqRel)
+}
+
+pub fn user_trap_count() -> u64 {
+    USER_TRAP_COUNT.load(Ordering::Acquire)
 }
