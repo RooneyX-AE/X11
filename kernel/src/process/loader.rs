@@ -4,7 +4,7 @@
 //! virtual mappings but cannot return physical frames. That ownership rule is
 //! explicit here rather than pretending this is a fully reclaiming transaction.
 
-use crate::memory::{EarlyFrameAllocator, MappingError, MappingFlags, Page4K, PageTableMapper, PAGE_SIZE_4K};
+use crate::memory::{MappingError, MappingFlags, Page4K, PageTableMapper, PAGE_SIZE_4K};
 
 use super::LoadPlan;
 
@@ -59,7 +59,6 @@ impl LoadResult {
 
 pub fn map_load_plan<M: PageTableMapper>(
     mapper: &mut M,
-    allocator: &mut EarlyFrameAllocator<'_>,
     plan: LoadPlan,
 ) -> Result<LoadResult, LoadError> {
     let mut pages = [None; MAX_MAPPED_PAGES];
@@ -83,16 +82,15 @@ pub fn map_load_plan<M: PageTableMapper>(
                     return Err(LoadError::InvalidPage);
                 }
             };
-            let frame = match allocator.allocate_frame() {
-                Some(frame) => frame,
+            let frame = match mapper.allocate_frame() {
+                Some(range) => range.start(),
                 None => {
                     rollback(mapper, &pages, count)?;
                     return Err(LoadError::Mapping(MappingError::FrameAllocationFailed));
                 }
             };
-            let physical_address = frame.start_address();
 
-            match mapper.map_page(page, physical_address, flags) {
+            match mapper.map_page(page, frame, flags) {
                 Ok(flush) => flush.flush(),
                 Err(error) => {
                     rollback(mapper, &pages, count)?;
@@ -100,7 +98,7 @@ pub fn map_load_plan<M: PageTableMapper>(
                 }
             }
 
-            pages[count] = Some(MappedPage { virtual_address: address, physical_address });
+            pages[count] = Some(MappedPage { virtual_address: address, physical_address: frame });
             count += 1;
             address = match address.checked_add(PAGE_SIZE_4K) {
                 Some(value) => value,
