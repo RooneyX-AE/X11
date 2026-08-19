@@ -3,7 +3,7 @@
 //! Allocation is deliberately separate from this module. This file defines
 //! only the addresses and invariants that a process builder must obey.
 
-use super::{VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
+use super::{VirtRange, KERNEL_SPACE_START};
 
 pub const USER_STACK_PAGES: u64 = 16;
 pub const USER_STACK_SIZE: u64 = USER_STACK_PAGES * super::PAGE_SIZE_4K;
@@ -30,6 +30,7 @@ pub fn is_valid_user_stack_pointer(rsp: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::USER_SPACE_START;
 
     #[test]
     fn stack_is_inside_user_half() {
