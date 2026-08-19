@@ -185,6 +185,40 @@ impl SystemRuntime {
         Ok(transfer)
     }
 
+    /// Commits a userspace voluntary yield. Returns a successor transfer when
+    /// another userspace task is ready, and `None` when the current task should
+    /// simply resume.
+    pub fn commit_userspace_yield(&mut self) -> Result<Option<UserReturnTransfer>, SystemRuntimeError> {
+        let current_process = self.current_process.ok_or(SystemRuntimeError::NoCurrentProcess)?;
+        let current_task = self.runtime.manager().scheduler.current().ok_or(SystemRuntimeError::NoCurrentProcess)?;
+        let current_binding = self.processes.binding(current_process).map_err(SystemRuntimeError::Process)?
+            .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        if current_binding.task() != current_task
+            || self.processes.state(current_process).map_err(SystemRuntimeError::Process)? != ProcessState::Running
+        {
+            return Err(SystemRuntimeError::TaskBindingMismatch);
+        }
+
+        let successor = match select_userspace_successor(self, Some(current_task)) {
+            Ok(successor) => successor,
+            Err(UserSuccessorError::NoReadyTask) => return Ok(None),
+            Err(error) => return Err(SystemRuntimeError::Successor(error)),
+        };
+
+        self.processes.yield_to(current_process, successor.process())
+            .map_err(SystemRuntimeError::Process)?;
+        let decision = self.runtime.manager_mut().scheduler.schedule_next();
+        if decision.next != Some(successor.task()) || self.runtime.manager().scheduler.current() != Some(successor.task()) {
+            return Err(SystemRuntimeError::TaskBindingMismatch);
+        }
+
+        self.current_process = Some(successor.process());
+        unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
+        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task))
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        Ok(Some(transfer))
+    }
+
     fn current_binding_checked(&self) -> Result<UserExecutionBinding, SyscallError> {
         if self.pending_exit.is_some() { return Err(SyscallError::InvalidArguments); }
         let process = self.current_process.ok_or(SyscallError::InvalidArguments)?;
