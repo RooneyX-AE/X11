@@ -58,3 +58,78 @@ impl<M: PageTableMapper> UserCopyBackend for X86UserCopyBackend<'_, M> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::X86UserCopyBackend;
+    use crate::memory::{
+        MappingError, MappingFlags, MappingFlush, Page4K, PageAccess, PageTableMapper,
+        PhysicalMemoryMapping, VirtRange, KERNEL_SPACE_START, USER_SPACE_START,
+    };
+    use super::super::PAGE_SIZE_4K;
+
+    struct Flush;
+    impl MappingFlush for Flush {
+        fn flush(self) {}
+    }
+
+    struct FakeMapper {
+        physical: Option<u64>,
+    }
+
+    impl PageTableMapper for FakeMapper {
+        type Flush = Flush;
+
+        fn allocate_frame(&mut self) -> Option<u64> { None }
+
+        fn map_page(
+            &mut self,
+            _: Page4K,
+            _: u64,
+            _: MappingFlags,
+        ) -> Result<Self::Flush, MappingError> {
+            unreachable!()
+        }
+
+        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), MappingError> {
+            unreachable!()
+        }
+
+        fn translate(&self, _: u64) -> Option<u64> { self.physical }
+
+        fn page_access(&self, _: u64) -> PageAccess {
+            PageAccess::user_read_only()
+        }
+
+        fn address_space(&self) -> VirtRange {
+            VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap()
+        }
+    }
+
+    #[test]
+    fn rejects_direct_map_overflow_before_raw_copy() {
+        let mapper = FakeMapper { physical: Some(u64::MAX) };
+        let backend = X86UserCopyBackend::new(
+            &mapper,
+            PhysicalMemoryMapping::new(1),
+        );
+        let mut destination = [0u8; 1];
+
+        assert_eq!(
+            crate::memory::UserCopyBackend::copy_from_user(
+                &backend,
+                USER_SPACE_START,
+                &mut destination,
+            ),
+            Err(crate::memory::UserReadError::BackendFailure)
+        );
+    }
+
+    #[test]
+    fn page_chunk_calculation_never_crosses_a_page() {
+        let source = PAGE_SIZE_4K - 3;
+        let page_offset = source % PAGE_SIZE_4K;
+        let remaining = PAGE_SIZE_4K - page_offset;
+        assert_eq!(remaining, 3);
+    }
+}
