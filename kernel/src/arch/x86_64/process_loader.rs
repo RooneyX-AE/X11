@@ -30,26 +30,36 @@ pub unsafe fn load_process_image<'regions>(
     image: ProcessImage,
     elf_bytes: crate::process::ElfImage<'_>,
 ) -> Result<(AddressSpaceRoot, PopulatedAddressSpace), ProcessLoadError> {
-    let root = unsafe { AddressSpaceRoot::new_user_root(physical_memory.offset(), allocator) }
-        .map_err(ProcessLoadError::Root)?;
+    let checkpoint = allocator.checkpoint();
 
-    let spec = image.address_space();
-    let mut mapper = unsafe {
-        X86PageTableMapper::new_for_root(
-            physical_memory.offset(),
-            root.frame(),
-            allocator,
-            spec.layout().user_range(),
-        )
+    let result = (|| {
+        let root = unsafe { AddressSpaceRoot::new_user_root(physical_memory.offset(), allocator) }
+            .map_err(ProcessLoadError::Root)?;
+
+        let spec = image.address_space();
+        let mut mapper = unsafe {
+            X86PageTableMapper::new_for_root(
+                physical_memory.offset(),
+                root.frame(),
+                allocator,
+                spec.layout().user_range(),
+            )
+        }
+        .map_err(ProcessLoadError::Mapping)?;
+
+        let built = build_address_space(&mut mapper, spec, image)
+            .map_err(|_| ProcessLoadError::Mapping(crate::memory::MappingError::BackendFailure))?;
+
+        let mut writer = X86ImagePageWriter::new(physical_memory);
+        let populated = crate::process::PopulatedAddressSpace::populate(&mut writer, elf_bytes, built)
+            .map_err(ProcessLoadError::Image)?;
+
+        Ok((root, populated))
+    })();
+
+    if result.is_err() {
+        allocator.rollback(checkpoint);
     }
-    .map_err(ProcessLoadError::Mapping)?;
 
-    let built = build_address_space(&mut mapper, spec, image)
-        .map_err(|_| ProcessLoadError::Mapping(crate::memory::MappingError::BackendFailure))?;
-
-    let mut writer = X86ImagePageWriter::new(physical_memory);
-    let populated = crate::process::PopulatedAddressSpace::populate(&mut writer, elf_bytes, built)
-        .map_err(ProcessLoadError::Image)?;
-
-    Ok((root, populated))
+    result
 }
