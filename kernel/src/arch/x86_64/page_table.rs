@@ -10,7 +10,7 @@ use x86_64::PhysAddr;
 use crate::arch::x86_64::paging;
 use crate::memory::{
     EarlyFrameAllocator, FrameAllocator as X11FrameAllocator, MappingError, MappingFlags,
-    MappingFlush, Page4K, PageAccess, PageTableMapper, PhysRange, VirtRange,
+    MappingFlush, Page4K, PageAccess, PageTableMapper, VirtRange,
 };
 
 pub struct X86Flush(MapperFlush<Size4KiB>);
@@ -125,10 +125,8 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
 impl PageTableMapper for X86PageTableMapper<'_, '_> {
     type Flush = X86Flush;
 
-    fn allocate_frame(&mut self) -> Option<PhysRange> {
-        self.frame_allocator.inner.allocate_frame().and_then(|frame| {
-            PhysRange::new(frame.start_address(), frame.start_address().checked_add(4096)?).ok()
-        })
+    fn allocate_frame(&mut self) -> Option<u64> {
+        self.frame_allocator.inner.allocate_frame().map(|frame| frame.start_address())
     }
 
     fn map_page(&mut self, page: Page4K, physical_address: u64, mapping_flags: MappingFlags) -> Result<Self::Flush, MappingError> {
