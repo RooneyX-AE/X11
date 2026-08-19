@@ -1,17 +1,17 @@
 //! x86_64 kernel return primitives for scheduler dispatch.
 
 use super::context_switch::Context;
-use super::interrupted_state::KernelPreemptState;
+use super::interrupted_state::InterruptedState;
 
 /// Restores a previously interrupted kernel task and returns through `iretq`.
 ///
 /// # Safety
-/// `state` must point to a valid, live `KernelPreemptState`. Its `resume_rsp`
-/// must identify writable memory in the target task's kernel stack with at
-/// least 24 bytes available below it. `cs`, `rip`, and `rflags` must be valid
-/// for a same-CPL 64-bit `iretq` return.
+/// `state` must point to a valid, live `InterruptedState`. Its
+/// `return_state.resume_rsp` must identify writable memory in the target task's
+/// kernel stack with at least 24 bytes available below it. The saved return
+/// state must be valid for a same-CPL 64-bit `iretq` return.
 #[unsafe(naked)]
-pub unsafe extern "C" fn return_to_kernel(state: *const KernelPreemptState) -> ! {
+pub unsafe extern "C" fn return_to_kernel(state: *const InterruptedState) -> ! {
     core::arch::naked_asm!(
         "mov r11, rdi",
         "mov r10, [r11 + 144]",
@@ -65,40 +65,39 @@ pub unsafe extern "C" fn return_to_context(context: *const Context) -> ! {
     );
 }
 
-pub fn validate_kernel_state(state: &KernelPreemptState) -> bool {
-    state.rip != 0
-        && state.resume_rsp >= 24
-        && state.cs & 3 == 0
-        && state.rflags & 2 != 0
+pub fn validate_kernel_state(state: &InterruptedState) -> bool {
+    state.is_valid() && state.return_state().kernel_iret_words().is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::validate_kernel_state;
-    use crate::arch::x86_64::interrupted_state::KernelPreemptState;
-    use crate::arch::x86_64::interrupt_entry::SavedRegisters;
+    use crate::arch::x86_64::interrupted_state::InterruptedState;
+    use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 
     #[test]
     fn validates_kernel_return_packet() {
-        let state = KernelPreemptState {
-            registers: SavedRegisters::default(),
-            rip: 0x1000,
-            cs: 0x8,
-            rflags: 0x202,
-            resume_rsp: 0x8000,
-        };
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000;
+        raw[1] = 0x8;
+        raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        let state = unsafe { InterruptedState::capture(&registers, frame) };
         assert!(validate_kernel_state(&state));
     }
 
     #[test]
-    fn rejects_user_code_selector() {
-        let state = KernelPreemptState {
-            registers: SavedRegisters::default(),
-            rip: 0x1000,
-            cs: 0x1b,
-            rflags: 0x202,
-            resume_rsp: 0x8000,
-        };
+    fn rejects_user_return_packet() {
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 5];
+        raw[0] = 0x1000;
+        raw[1] = 0x1b;
+        raw[2] = 0x202;
+        raw[3] = 0x8000;
+        raw[4] = 0x23;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        let state = unsafe { InterruptedState::capture(&registers, frame) };
         assert!(!validate_kernel_state(&state));
     }
 }
