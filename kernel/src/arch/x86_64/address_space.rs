@@ -56,8 +56,10 @@ impl AddressSpaceRoot {
 
         unsafe {
             core::ptr::write_bytes(root_virtual.cast::<u8>(), 0, core::mem::size_of::<PageTable>());
+            let root_table = &mut *root_virtual;
+            let active_table = &*active_virtual;
             for index in KERNEL_P4_START..KERNEL_P4_END {
-                (*root_virtual)[index] = (*active_virtual)[index].clone();
+                root_table[index] = active_table[index].clone();
             }
         }
 
