@@ -77,10 +77,10 @@ pub fn copy_from_user<M: PageTableMapper, B: UserCopyBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{KERNEL_SPACE_START, USER_SPACE_START};
+    use crate::memory::{KERNEL_SPACE_START, MappingFlags, MappingFlush, MappingError, USER_SPACE_START};
 
     struct Flush;
-    impl super::super::MappingFlush for Flush {
+    impl MappingFlush for Flush {
         fn flush(self) {}
     }
 
@@ -88,9 +88,9 @@ mod tests {
 
     impl PageTableMapper for FakeMapper {
         type Flush = Flush;
-        fn allocate_frame(&mut self) -> Option<super::super::PhysRange> { None }
-        fn map_page(&mut self, _: Page4K, _: u64, _: super::super::MappingFlags) -> Result<Self::Flush, super::super::MappingError> { unreachable!() }
-        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), super::super::MappingError> { unreachable!() }
+        fn allocate_frame(&mut self) -> Option<u64> { None }
+        fn map_page(&mut self, _: Page4K, _: u64, _: MappingFlags) -> Result<Self::Flush, MappingError> { unreachable!() }
+        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), MappingError> { unreachable!() }
         fn translate(&self, _: u64) -> Option<u64> { None }
         fn page_access(&self, _: u64) -> PageAccess { self.access }
         fn address_space(&self) -> super::super::VirtRange {
