@@ -84,6 +84,34 @@ where
     }
 }
 
+/// Dispatches both memory-bearing and process-control syscalls without
+/// allowing either subsystem to bypass the architecture-owned control object.
+pub fn dispatch_with_memory_and_control<M, B, S, C>(
+    request: SyscallRequest,
+    mapper: &M,
+    backend: &B,
+    sink: &mut S,
+    control: &mut C,
+) -> SyscallResult
+where
+    M: UserMemoryView,
+    B: UserCopyBackend,
+    S: WriteSink,
+    C: ProcessSyscallControl,
+{
+    match request.syscall().ok_or(SyscallError::UnknownNumber)? {
+        Syscall::Write => sys_write_with_memory(request.user_slice(), mapper, backend, sink),
+        Syscall::Exit => {
+            control.exit(request.arg0)?;
+            Ok(0)
+        }
+        Syscall::Yield => {
+            control.yield_now()?;
+            Ok(0)
+        }
+    }
+}
+
 pub fn dispatch_with_memory<M, B, S>(
     request: SyscallRequest,
     mapper: &M,
@@ -133,7 +161,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, dispatch_with_control, dispatch_with_memory, ProcessSyscallControl, SyscallError, SyscallRequest, WriteSink};
+    use super::{dispatch, dispatch_with_control, dispatch_with_memory, dispatch_with_memory_and_control, ProcessSyscallControl, SyscallError, SyscallRequest, WriteSink};
     use crate::memory::{KERNEL_SPACE_START, MappingFlags, MappingFlush, MappingError, Page4K, PageAccess, PageTableMapper, UserMemoryView, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
     use x11_os_abi::{Syscall, UserSlice};
 
@@ -211,6 +239,19 @@ mod tests {
         assert_eq!(dispatch_with_control(SyscallRequest::exit(42), &mut control), Ok(0));
         assert_eq!(control.exited, Some(42));
         assert_eq!(dispatch_with_control(SyscallRequest::yield_now(), &mut control), Ok(0));
+        assert_eq!(control.yields, 1);
+    }
+
+    #[test]
+    fn combined_dispatch_routes_write_and_process_control() {
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        let backend = FakeBackend;
+        let mut sink = Sink::default();
+        let mut control = Control::default();
+        assert_eq!(dispatch_with_memory_and_control(SyscallRequest::write(UserSlice { ptr: USER_SPACE_START, len: 4 }), &mapper, &backend, &mut sink, &mut control), Ok(4));
+        assert_eq!(dispatch_with_memory_and_control(SyscallRequest::exit(42), &mapper, &backend, &mut sink, &mut control), Ok(0));
+        assert_eq!(dispatch_with_memory_and_control(SyscallRequest::yield_now(), &mapper, &backend, &mut sink, &mut control), Ok(0));
+        assert_eq!(control.exited, Some(42));
         assert_eq!(control.yields, 1);
     }
 
