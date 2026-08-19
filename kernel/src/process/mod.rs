@@ -34,7 +34,7 @@ pub use initial_context::{InitialContext, InitialContextError};
 pub use load_plan::{LoadPlan, LoadPlanError, SegmentMapping};
 #[allow(unused_imports)]
 pub use loaded_address_space::{LoadedAddressSpace, LoadedAddressSpaceError};
-pub use loader::{map_load_plan, LoadError, LoadResult, MappedPage, MAX_MAPPED_PAGES};
+pub use loader::{map_load_plan, LoadError, LoadResult};
 #[allow(unused_imports)]
 pub use manager::{ProcessManager, ProcessManagerError, SpawnedProcess, MAX_PROCESSES};
 pub use populated_address_space::{PopulatedAddressSpace, PopulationError};
