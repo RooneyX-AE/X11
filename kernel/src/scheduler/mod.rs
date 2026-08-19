@@ -35,7 +35,7 @@ pub enum SchedulerError {
     SuccessorNotReady,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Scheduler {
     tasks: Vec<Option<Box<TaskControlBlock>>>,
     generations: Vec<u32>,
