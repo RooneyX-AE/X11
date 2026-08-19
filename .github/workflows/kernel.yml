@@ -33,6 +33,14 @@ jobs:
         run: cargo check -p x11-os-user-hello --target x86_64-unknown-none
       - name: Build userspace ELF payload
         run: cargo build -p x11-os-user-hello --bin x11-os-user-hello --target x86_64-unknown-none
+      - name: Verify userspace ELF type
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="target/x86_64-unknown-none/debug/x11-os-user-hello"
+          test -f "$payload"
+          readelf -h "$payload" | tee userspace-elf-header.txt
+          readelf -h "$payload" | grep -Eq 'Type:.*EXEC'
       - name: Check kernel binary
         shell: bash
         env:
@@ -138,4 +146,5 @@ jobs:
           path: |
             cargo-check.log
             qemu.log
+            userspace-elf-header.txt
           if-no-files-found: ignore
