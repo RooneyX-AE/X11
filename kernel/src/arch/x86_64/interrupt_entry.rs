@@ -49,18 +49,24 @@ extern "C" fn syscall_entry_rust(registers: *mut SavedRegisters, return_frame: *
 
     let registers = unsafe { &mut *registers };
     let request = crate::syscall::SyscallRequest::new(registers.rax, registers.rdi, registers.rsi, registers.rdx);
-    let result = match crate::memory::PhysicalMemoryMapping::global() {
+    let dispatch = match crate::memory::PhysicalMemoryMapping::global() {
         Some(mapping) => {
             let view = unsafe { crate::arch::x86_64::user_memory::X86ActiveUserMemory::current(mapping.offset()) };
             let backend = crate::arch::x86_64::user_copy::X86UserCopyBackend::new(&view, mapping);
             let mut sink = SerialWriteSink;
-            crate::syscall::dispatch_with_memory(request, &view, &backend, &mut sink)
+            if let Some(system_ptr) = crate::arch::x86_64::cpu_local::local().system_runtime_ptr() {
+                let system = unsafe { &mut *(system_ptr as *mut crate::arch::x86_64::system_runtime::SystemRuntime) };
+                crate::syscall::dispatch_with_memory_and_control_action(request, &view, &backend, &mut sink, system)
+            } else {
+                crate::syscall::SyscallDispatch::returned(crate::syscall::dispatch_with_memory(request, &view, &backend, &mut sink))
+            }
         }
-        None => Err(crate::syscall::SyscallError::NotImplemented),
+        None => crate::syscall::SyscallDispatch::returned(Err(crate::syscall::SyscallError::NotImplemented)),
     };
 
-    let success = result.is_ok();
-    registers.rax = syscall_result_abi_value(result);
+    let success = dispatch.result.is_ok();
+    registers.rax = syscall_result_abi_value(dispatch.result);
+    unsafe { crate::arch::x86_64::cpu_local::local().publish_syscall_action(dispatch.action); }
     crate::arch::x86_64::idt::record_user_trap(success);
 }
 
