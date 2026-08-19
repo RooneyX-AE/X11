@@ -83,3 +83,11 @@ pub fn record_timer_interrupt() {
         crate::arch::x86_64::local_apic::end_of_interrupt(event);
     }
 }
+
+pub fn timer_ticks() -> u64 {
+    TIMER_TICKS.load(Ordering::Acquire)
+}
+
+pub fn take_timer_pending() -> bool {
+    TIMER_PENDING.swap(false, Ordering::AcqRel)
+}
