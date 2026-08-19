@@ -23,6 +23,7 @@ pub mod preempt_return;
 pub mod preemption_contract;
 pub mod preemption_plan;
 pub mod process_loader;
+pub mod process_runtime;
 pub mod runtime;
 pub mod tsc;
 pub mod user_activation;
