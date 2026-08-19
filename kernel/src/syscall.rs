@@ -15,6 +15,8 @@ pub struct SyscallRequest {
 impl SyscallRequest {
     pub const fn new(number: u64, arg0: u64, arg1: u64, arg2: u64) -> Self { Self { number, arg0, arg1, arg2 } }
     pub const fn write(slice: UserSlice) -> Self { Self::new(Syscall::Write.number(), slice.ptr, slice.len, 0) }
+    pub const fn exit(code: u64) -> Self { Self::new(Syscall::Exit.number(), code, 0, 0) }
+    pub const fn yield_now() -> Self { Self::new(Syscall::Yield.number(), 0, 0, 0) }
     pub const fn syscall(self) -> Option<Syscall> { Syscall::from_number(self.number) }
     pub const fn user_slice(self) -> UserSlice { UserSlice { ptr: self.arg0, len: self.arg1 } }
 }
@@ -50,11 +52,35 @@ pub trait WriteSink {
     fn write(&mut self, bytes: &[u8]) -> Result<(), SyscallError>;
 }
 
+/// Process-control operations required by lifecycle syscalls.
+/// The architecture layer supplies the concrete process/scheduler owner.
+pub trait ProcessSyscallControl {
+    fn exit(&mut self, code: u64) -> Result<(), SyscallError>;
+    fn yield_now(&mut self) -> Result<(), SyscallError>;
+}
+
 pub fn dispatch(request: SyscallRequest) -> SyscallResult {
     validate_slice(request.user_slice()).map_err(SyscallError::InvalidUserRange)?;
     match request.syscall().ok_or(SyscallError::UnknownNumber)? {
         Syscall::Write => Err(SyscallError::NotImplemented),
         Syscall::Exit | Syscall::Yield => Err(SyscallError::NotImplemented),
+    }
+}
+
+pub fn dispatch_with_control<C>(request: SyscallRequest, control: &mut C) -> SyscallResult
+where
+    C: ProcessSyscallControl,
+{
+    match request.syscall().ok_or(SyscallError::UnknownNumber)? {
+        Syscall::Exit => {
+            control.exit(request.arg0)?;
+            Ok(0)
+        }
+        Syscall::Yield => {
+            control.yield_now()?;
+            Ok(0)
+        }
+        Syscall::Write => Err(SyscallError::NotImplemented),
     }
 }
 
@@ -107,7 +133,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, dispatch_with_memory, SyscallError, SyscallRequest, WriteSink};
+    use super::{dispatch, dispatch_with_control, dispatch_with_memory, ProcessSyscallControl, SyscallError, SyscallRequest, WriteSink};
     use crate::memory::{KERNEL_SPACE_START, MappingFlags, MappingFlush, MappingError, Page4K, PageAccess, PageTableMapper, UserMemoryView, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
     use x11_os_abi::{Syscall, UserSlice};
 
@@ -149,6 +175,23 @@ mod tests {
         fn write(&mut self, _: &[u8]) -> Result<(), SyscallError> { Err(SyscallError::WriteFailed) }
     }
 
+    #[derive(Default)]
+    struct Control {
+        exited: Option<u64>,
+        yields: usize,
+    }
+    impl ProcessSyscallControl for Control {
+        fn exit(&mut self, code: u64) -> Result<(), SyscallError> {
+            self.exited = Some(code);
+            Ok(())
+        }
+
+        fn yield_now(&mut self) -> Result<(), SyscallError> {
+            self.yields += 1;
+            Ok(())
+        }
+    }
+
     #[test]
     fn decodes_shared_syscall_numbers() {
         assert_eq!(SyscallRequest::new(Syscall::Write.number(), 1, 2, 3).syscall(), Some(Syscall::Write));
@@ -157,10 +200,25 @@ mod tests {
     }
 
     #[test]
+    fn exit_and_yield_requests_have_explicit_arguments() {
+        assert_eq!(SyscallRequest::exit(42).arg0, 42);
+        assert_eq!(SyscallRequest::yield_now().number, Syscall::Yield.number());
+    }
+
+    #[test]
+    fn process_control_executes_exit_and_yield_without_global_state() {
+        let mut control = Control::default();
+        assert_eq!(dispatch_with_control(SyscallRequest::exit(42), &mut control), Ok(0));
+        assert_eq!(control.exited, Some(42));
+        assert_eq!(dispatch_with_control(SyscallRequest::yield_now(), &mut control), Ok(0));
+        assert_eq!(control.yields, 1);
+    }
+
+    #[test]
     fn syscall_errors_encode_to_shared_abi() {
-        assert_eq!(SyscallError::UnknownNumber.abi_return_value(), AbiSyscallError::UnknownSyscall.return_value());
-        assert_eq!(SyscallError::NotImplemented.abi_return_value(), AbiSyscallError::NotImplemented.return_value());
-        assert_eq!(SyscallError::WriteFailed.abi_return_value(), AbiSyscallError::WriteFailed.return_value());
+        assert_eq!(SyscallError::UnknownNumber.abi_return_value(), x11_os_abi::SyscallError::UnknownSyscall.return_value());
+        assert_eq!(SyscallError::NotImplemented.abi_return_value(), x11_os_abi::SyscallError::NotImplemented.return_value());
+        assert_eq!(SyscallError::WriteFailed.abi_return_value(), x11_os_abi::SyscallError::WriteFailed.return_value());
     }
 
     #[test]
