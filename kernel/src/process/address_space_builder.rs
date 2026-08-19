@@ -4,7 +4,7 @@
 //! knowing the concrete architecture. It only returns a ready-to-activate
 //! description after the ELF image and user stack are mapped and verified.
 
-use crate::memory::{MappingFlags, Page4K, PageTableMapper};
+use crate::memory::{MappingFlags, MappingFlush, Page4K, PageTableMapper};
 
 use super::{map_load_plan, AddressSpaceSpec, LoadError, LoadResult, ProcessImage};
 
@@ -46,9 +46,7 @@ impl BuiltAddressSpace {
     pub const fn entry_executable(self) -> bool { self.entry_executable }
     pub const fn stack_writable(self) -> bool { self.stack_writable }
     pub const fn stack_executable(self) -> bool { self.stack_executable }
-    pub fn stack_page(self, index: usize) -> Option<MappedStackPage> {
-        if index >= self.stack_count { None } else { self.stack_pages[index] }
-    }
+    pub fn stack_page(self, index: usize) -> Option<MappedStackPage> { if index >= self.stack_count { None } else { self.stack_pages[index] } }
 }
 
 pub fn build_address_space<M: PageTableMapper>(
@@ -56,13 +54,9 @@ pub fn build_address_space<M: PageTableMapper>(
     spec: AddressSpaceSpec,
     image: ProcessImage,
 ) -> Result<BuiltAddressSpace, AddressSpaceBuildError> {
-    if image.address_space().id() != spec.id() {
-        return Err(AddressSpaceBuildError::AddressSpaceMismatch);
-    }
+    if image.address_space().id() != spec.id() { return Err(AddressSpaceBuildError::AddressSpaceMismatch); }
 
-    let load = map_load_plan(mapper, image.load_plan())
-        .map_err(AddressSpaceBuildError::Image)?;
-
+    let load = map_load_plan(mapper, image.load_plan()).map_err(AddressSpaceBuildError::Image)?;
     let stack = image.stack_plan();
     let mut stack_pages = [None; crate::memory::USER_STACK_PAGES as usize];
     let mut stack_count = 0usize;
@@ -89,7 +83,7 @@ pub fn build_address_space<M: PageTableMapper>(
         stack_count += 1;
     }
 
-    let entry_access = mapper.page_access(load.entry());
+    let entry_access = mapper.page_access(load.entry);
     if !entry_access.mapped || !entry_access.user {
         rollback_stack(mapper, &stack_pages, stack_count)?;
         rollback_load(mapper, load)?;
@@ -134,9 +128,7 @@ fn rollback_load<M: PageTableMapper>(mapper: &mut M, load: LoadResult) -> Result
     for index in (0..load.mapped_pages).rev() {
         let mapped = load.page(index).ok_or(AddressSpaceBuildError::RollbackFailed)?;
         let page = Page4K::from_start_address(mapped.virtual_address).ok_or(AddressSpaceBuildError::RollbackFailed)?;
-        mapper.unmap_page(page)
-            .map(|(_, flush)| flush.flush())
-            .map_err(|_| AddressSpaceBuildError::RollbackFailed)?;
+        mapper.unmap_page(page).map(|(_, flush)| flush.flush()).map_err(|_| AddressSpaceBuildError::RollbackFailed)?;
     }
     Ok(())
 }
@@ -148,9 +140,7 @@ fn rollback_stack<M: PageTableMapper>(
 ) -> Result<(), AddressSpaceBuildError> {
     for index in (0..count).rev() {
         let mapped = pages[index].ok_or(AddressSpaceBuildError::RollbackFailed)?;
-        mapper.unmap_page(mapped.virtual_page)
-            .map(|(_, flush)| flush.flush())
-            .map_err(|_| AddressSpaceBuildError::RollbackFailed)?;
+        mapper.unmap_page(mapped.virtual_page).map(|(_, flush)| flush.flush()).map_err(|_| AddressSpaceBuildError::RollbackFailed)?;
     }
     Ok(())
 }
