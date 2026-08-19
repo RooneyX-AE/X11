@@ -1,6 +1,6 @@
 //! Architecture-independent syscall dispatch contract.
 
-use x11_os_abi::{Syscall, UserSlice};
+use x11_os_abi::{Syscall, SyscallError as AbiSyscallError, UserSlice};
 
 use crate::memory::{copy_from_user, validate_slice, UserCopyBackend, UserMemoryView, UserRangeError, UserReadError};
 
@@ -27,6 +27,21 @@ pub enum SyscallError {
     InvalidUserRange(UserRangeError),
     InvalidUserMemory(UserReadError),
     WriteFailed,
+}
+
+impl SyscallError {
+    pub const fn abi_error(self) -> AbiSyscallError {
+        match self {
+            Self::UnknownNumber => AbiSyscallError::UnknownSyscall,
+            Self::NotImplemented => AbiSyscallError::NotImplemented,
+            Self::InvalidArguments => AbiSyscallError::InvalidArguments,
+            Self::InvalidUserRange(_) => AbiSyscallError::InvalidUserRange,
+            Self::InvalidUserMemory(_) => AbiSyscallError::InvalidUserMemory,
+            Self::WriteFailed => AbiSyscallError::WriteFailed,
+        }
+    }
+
+    pub const fn abi_return_value(self) -> u64 { self.abi_error().return_value() }
 }
 
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -139,6 +154,13 @@ mod tests {
         assert_eq!(SyscallRequest::new(Syscall::Write.number(), 1, 2, 3).syscall(), Some(Syscall::Write));
         assert_eq!(SyscallRequest::new(Syscall::Exit.number(), 0, 0, 0).syscall(), Some(Syscall::Exit));
         assert_eq!(SyscallRequest::new(Syscall::Yield.number(), 0, 0, 0).syscall(), Some(Syscall::Yield));
+    }
+
+    #[test]
+    fn syscall_errors_encode_to_shared_abi() {
+        assert_eq!(SyscallError::UnknownNumber.abi_return_value(), AbiSyscallError::UnknownSyscall.return_value());
+        assert_eq!(SyscallError::NotImplemented.abi_return_value(), AbiSyscallError::NotImplemented.return_value());
+        assert_eq!(SyscallError::WriteFailed.abi_return_value(), AbiSyscallError::WriteFailed.return_value());
     }
 
     #[test]
