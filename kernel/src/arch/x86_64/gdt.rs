@@ -16,6 +16,13 @@ const DOUBLE_FAULT_STACK_SIZE: usize = 32 * 1024;
 pub(crate) const USER_DATA_SELECTOR: u16 = 0x13;
 pub(crate) const USER_CODE_SELECTOR: u16 = 0x1b;
 
+const _: () = {
+    assert!((USER_DATA_SELECTOR >> 3) == 2);
+    assert!((USER_CODE_SELECTOR >> 3) == 3);
+    assert!((USER_DATA_SELECTOR & 3) == 3);
+    assert!((USER_CODE_SELECTOR & 3) == 3);
+};
+
 #[repr(align(16))]
 struct AlignedStack([u8; DOUBLE_FAULT_STACK_SIZE]);
 
