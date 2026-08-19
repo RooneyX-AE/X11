@@ -12,7 +12,7 @@ use crate::scheduler::{ExecutionBinding, ExecutionHandle, TaskId};
 
 use super::context_switch::Context;
 use super::execution::{ExecutionError, X86ExecutionBinding};
-use super::interrupted_state::{InterruptedState, KernelPreemptState};
+use super::interrupted_state::InterruptedState;
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 use super::preemption_plan::PreemptionPlan;
 
@@ -76,8 +76,10 @@ impl ExecutionRegistry {
     /// Peeks at the architecture-level return path without changing ownership.
     pub fn preemption_plan(&self, task_id: TaskId) -> Option<PreemptionPlan> {
         let binding = self.get(task_id)?;
-        if let Some(state) = binding.interrupted().and_then(InterruptedState::kernel_preempt_state) {
-            return Some(PreemptionPlan::IretKernel { task_id, state });
+        if let Some(state) = binding.interrupted() {
+            if state.return_state().kernel_iret_words().is_some() {
+                return Some(PreemptionPlan::IretKernel { task_id, state });
+            }
         }
 
         let context = *binding.context();
@@ -86,9 +88,10 @@ impl ExecutionRegistry {
 
     /// Consumes a previously interrupted kernel snapshot when the scheduler has
     /// committed the task as the next CPU owner.
-    pub fn take_kernel_preempt_state(&mut self, task_id: TaskId) -> Option<KernelPreemptState> {
+    pub fn take_kernel_preempt_state(&mut self, task_id: TaskId) -> Option<InterruptedState> {
         let binding = self.get_mut(task_id)?;
-        binding.take_interrupted()?.kernel_preempt_state()
+        let state = binding.take_interrupted()?;
+        state.return_state().kernel_iret_words().is_some().then_some(state)
     }
 
     pub fn context_pair_mut(&mut self, current: TaskId, next: TaskId) -> Option<(&mut Context, &Context)> {
