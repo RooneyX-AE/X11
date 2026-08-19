@@ -183,6 +183,7 @@ mod tests {
         GPR_BYTES,
         SAME_CPL_FRAME_BYTES,
     };
+    use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
     #[test]
     fn saved_register_layout_is_exact() {
@@ -216,14 +217,14 @@ mod tests {
     fn user_return_frame_reads_rsp_and_ss() {
         let mut raw = [0u64; 5];
         raw[0] = 0x1000;
-        raw[1] = 0x1b;
+        raw[1] = USER_CODE_SELECTOR as u64;
         raw[2] = 0x202;
         raw[3] = 0x8000;
-        raw[4] = 0x13;
+        raw[4] = USER_DATA_SELECTOR as u64;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
         assert!(!unsafe { frame.is_kernel_return() });
         assert_eq!(unsafe { frame.rsp() }, Some(0x8000));
-        assert_eq!(unsafe { frame.ss() }, Some(0x13));
+        assert_eq!(unsafe { frame.ss() }, Some(USER_DATA_SELECTOR as u64));
         assert_eq!(frame.resume_rsp(), Some(0x8000));
     }
 }
