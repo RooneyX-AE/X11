@@ -61,15 +61,20 @@ impl PageAccess {
     }
 }
 
-pub trait PageTableMapper {
+/// Read-only view over a single active address space. Syscalls and copy
+/// helpers depend only on this contract, not on page-table mutation.
+pub trait UserMemoryView {
+    fn translate(&self, virtual_address: u64) -> Option<u64>;
+    fn page_access(&self, virtual_address: u64) -> PageAccess;
+    fn address_space(&self) -> VirtRange;
+}
+
+pub trait PageTableMapper: UserMemoryView {
     type Flush: MappingFlush;
 
     fn allocate_frame(&mut self) -> Option<u64>;
     fn map_page(&mut self, page: Page4K, physical_address: u64, flags: MappingFlags) -> MapResult<Self::Flush>;
     fn unmap_page(&mut self, page: Page4K) -> MapResult<(u64, Self::Flush)>;
-    fn translate(&self, virtual_address: u64) -> Option<u64>;
-    fn page_access(&self, virtual_address: u64) -> PageAccess;
-    fn address_space(&self) -> VirtRange;
 }
 
 pub const KERNEL_ADDRESS_SPACE: VirtRange = match VirtRange::new(super::address_space::KERNEL_SPACE_START, u64::MAX) {
