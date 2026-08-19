@@ -12,12 +12,22 @@ pub fn run() {
     serial::write_str("\r\n");
 }
 
+/// Compatibility entrypoint for the early boot caller.
+pub fn print() {
+    run();
+}
+
 #[cfg(test)]
 mod tests {
-    use super::MESSAGE;
+    use super::{print, MESSAGE};
 
     #[test]
     fn hello_message_is_stable() {
         assert_eq!(MESSAGE, "Hello World from X11-OS!");
+    }
+
+    #[test]
+    fn compatibility_entrypoint_exists() {
+        let _ = print as fn();
     }
 }
