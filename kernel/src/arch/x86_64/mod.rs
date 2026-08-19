@@ -20,6 +20,7 @@ pub mod lapic_timer;
 pub mod local_apic;
 pub mod preemption;
 pub mod preempt_return;
+pub mod preemption_contract;
 pub mod preemption_plan;
 pub mod process_loader;
 pub mod runtime;
