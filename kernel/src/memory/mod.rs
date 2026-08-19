@@ -18,7 +18,9 @@ pub use page::{Page4K, PAGE_SIZE_4K};
 pub use page_table::{MappingError, MappingFlags, MappingFlush, PageAccess, PageTableMapper, UserMemoryView};
 pub use physical::PhysicalMemoryMapping;
 pub use user::{validate_slice, UserRangeError};
+#[allow(unused_imports)]
 pub use user_copy::{copy_from_user, validate_readable_range, UserCopyBackend, UserReadError};
+#[allow(unused_imports)]
 pub use user_stack::{
     is_valid_user_stack_pointer, user_stack_guard_range, user_stack_range, USER_STACK_GUARD_SIZE,
     USER_STACK_PAGES, USER_STACK_SIZE, USER_STACK_TOP,
