@@ -6,7 +6,9 @@
 
 use x11_os_abi::{Syscall, UserSlice};
 
-use crate::memory::{validate_readable_range, validate_slice, PageTableMapper, UserRangeError, UserReadError};
+use crate::memory::{
+    validate_readable_range, validate_slice, PageTableMapper, UserRangeError, UserReadError,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyscallRequest {
@@ -75,11 +77,14 @@ pub fn sys_write_checked<M: PageTableMapper>(mapper: &M, slice: UserSlice) -> Sy
 #[cfg(test)]
 mod tests {
     use super::{dispatch, sys_write_checked, SyscallError, SyscallRequest};
-    use crate::memory::{KERNEL_SPACE_START, Page4K, PageAccess, PageTableMapper, PhysRange, UserRangeError, UserReadError, VirtRange, USER_SPACE_START};
+    use crate::memory::{
+        KERNEL_SPACE_START, MappingFlags, MappingFlush, MappingError, Page4K, PageAccess,
+        PageTableMapper, UserRangeError, UserReadError, VirtRange, USER_SPACE_START,
+    };
     use x11_os_abi::{Syscall, UserSlice};
 
     struct Flush;
-    impl crate::memory::MappingFlush for Flush {
+    impl MappingFlush for Flush {
         fn flush(self) {}
     }
 
@@ -89,12 +94,23 @@ mod tests {
 
     impl PageTableMapper for FakeMapper {
         type Flush = Flush;
-        fn allocate_frame(&mut self) -> Option<PhysRange> { None }
-        fn map_page(&mut self, _: Page4K, _: u64, _: crate::memory::MappingFlags) -> Result<Self::Flush, crate::memory::MappingError> { unreachable!() }
-        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), crate::memory::MappingError> { unreachable!() }
+        fn allocate_frame(&mut self) -> Option<u64> { None }
+        fn map_page(
+            &mut self,
+            _: Page4K,
+            _: u64,
+            _: MappingFlags,
+        ) -> Result<Self::Flush, MappingError> {
+            unreachable!()
+        }
+        fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), MappingError> {
+            unreachable!()
+        }
         fn translate(&self, _: u64) -> Option<u64> { None }
         fn page_access(&self, _: u64) -> PageAccess { self.access }
-        fn address_space(&self) -> VirtRange { VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap() }
+        fn address_space(&self) -> VirtRange {
+            VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap()
+        }
     }
 
     #[test]
