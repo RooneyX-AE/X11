@@ -16,6 +16,7 @@ mod loader;
 mod manager;
 mod populated_address_space;
 mod populate;
+mod ramdisk_image;
 mod scheduler_binding;
 mod stack;
 mod state;
@@ -33,6 +34,7 @@ pub use loader::{map_load_plan, LoadError, LoadResult, MappedPage, MAX_MAPPED_PA
 pub use manager::{ProcessManager, ProcessManagerError, SpawnedProcess, MAX_PROCESSES};
 pub use populated_address_space::{PopulatedAddressSpace, PopulationError};
 pub use populate::{populate_image, ImagePageWriter, PopulateError};
+pub use ramdisk_image::{build_process_image, RamdiskImageError};
 pub use scheduler_binding::{bind_and_ready, ProcessSchedulerBindError};
 pub use stack::{StackPlanError, UserStackPlan};
 pub use state::{ExitedProcess, ProcessState, ProcessTransitionError, ReadyProcess, RunningProcess};
