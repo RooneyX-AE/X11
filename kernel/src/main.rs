@@ -166,6 +166,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 .expect("userspace process must enter scheduler ready state");
             serial::write_str("X11-OS: userspace process bound to scheduler\r\n");
             unsafe { system.start_user(process).expect("userspace process must start"); }
+            loop { core::hint::spin_loop(); }
         }
         None => {
             serial::write_str("X11-OS: userspace activation skipped\r\n");
