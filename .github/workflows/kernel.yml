@@ -54,23 +54,6 @@ jobs:
           echo '--- compiler error summary ---'
           grep -E '^error([[]E[0-9]+[]])?:|^ *--> ' cargo-check.log | head -n 240 || true
           echo '--- end compiler error summary ---'
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          current = None
-          count = 0
-          for line in Path("cargo-check.log").read_text(errors="replace").splitlines():
-              if re.match(r"^error(?:\[E\d+\])?:", line):
-                  current = line.strip()
-                  continue
-              match = re.match(r"^\s*-->\s+([^:]+):(\d+):(\d+)", line)
-              if match and current and count < 100:
-                  path, row, col = match.groups()
-                  safe = current.replace("\r", "").replace("\n", " ")
-                  print(f"::error file={path},line={row},col={col}::{safe}")
-                  count += 1
-          PY
           exit "$check_status"
       - name: Build UEFI image
         run: cargo build -p x11-os-boot
@@ -80,7 +63,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
-      - name: Boot kernel and verify userspace ring3 trap path
+      - name: Boot kernel and verify userspace ring3 syscall path
         shell: bash
         run: |
           set -o pipefail
@@ -124,7 +107,6 @@ jobs:
               "X11-OS: userspace address space populated",
               "X11-OS: userspace launch prepared",
           ]
-
           position = -1
           for marker in required:
               next_position = log.find(marker, position + 1)
@@ -136,7 +118,11 @@ jobs:
           if log.count(trap_marker) != 2:
               raise SystemExit(f"expected exactly two userspace trap markers, found {log.count(trap_marker)}")
 
-          print("QEMU evidence: userspace entered CPL3, trapped twice through int 0x80, and returned to userspace after the first trap")
+          write_marker = "Hello from X11-OS userspace!"
+          if log.count(write_marker) != 2:
+              raise SystemExit(f"expected exactly two userspace write outputs, found {log.count(write_marker)}")
+
+          print("QEMU evidence: CPL3 userspace executed Write twice, both traps returned to userspace, and serial output matched the userspace buffer")
           PY
       - name: Upload diagnostics
         if: always()
