@@ -4,8 +4,8 @@
 //! registry with the x86_64 execution runtime. Syscall code does not reach into
 //! either owner directly.
 
-use crate::process::{AddressSpaceId, ProcessId, ProcessManager, ProcessManagerError, ProcessState};
-use crate::scheduler::{ExecutionHandle, Priority, Scheduler, SchedulerError, TaskId};
+use crate::process::{ProcessId, ProcessManager, ProcessManagerError, ProcessState};
+use crate::scheduler::{Priority, Scheduler, SchedulerError, TaskId};
 use crate::syscall::{ProcessSyscallControl, SyscallError};
 
 use super::runtime::{KernelRuntime, RuntimeError};
