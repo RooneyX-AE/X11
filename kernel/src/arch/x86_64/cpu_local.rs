@@ -105,21 +105,21 @@ impl CpuLocalState {
     ///
     /// # Safety
     /// `registers` and `return_frame` must point to the live CPU interrupt
-    /// frame owned by the current interrupt entry. `resume_rsp` must be the
-    /// task stack pointer captured immediately before interrupt entry. Only the
-    /// owning CPU may call this method, and at most one snapshot may be pending.
+    /// frame owned by the current interrupt entry. `resume_rsp` is retained as
+    /// an entry-boundary parameter for callers, but the canonical resume stack
+    /// value is derived from the interrupt frame itself.
     pub unsafe fn capture_interrupted(
         &self,
         registers: *const SavedRegisters,
         return_frame: InterruptReturnFrame,
-        resume_rsp: u64,
+        _resume_rsp: u64,
     ) -> Result<TaskId, CaptureError> {
         let task = self.current_task().ok_or(CaptureError::NoCurrentTask)?;
         let slot = unsafe { &mut *self.interrupted.get() };
         if slot.is_some() {
             return Err(CaptureError::AlreadyPending);
         }
-        let snapshot = unsafe { InterruptedState::capture(registers, return_frame, resume_rsp) };
+        let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
         if !snapshot.is_valid() {
             return Err(CaptureError::InvalidState);
         }
