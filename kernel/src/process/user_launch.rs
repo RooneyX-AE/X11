@@ -38,9 +38,9 @@ impl UserLaunchPlan {
         let stack_pointer = context.stack_pointer();
         let stack_ok = stack_pointer != 0 && (0..image.built().stack_count()).any(|index| {
             image.built().stack_page(index).is_some_and(|page| {
-                let start = page.virtual_page;
-                let end = start.checked_add(PAGE_SIZE_4K).unwrap_or(u64::MAX);
-                stack_pointer > start && stack_pointer <= end
+                let start = page.virtual_page.start_address();
+                let end = page.virtual_page.end_address().unwrap_or(u64::MAX);
+                stack_pointer > start && stack_pointer <= end && end - start == PAGE_SIZE_4K
             })
         });
         if !stack_ok {
