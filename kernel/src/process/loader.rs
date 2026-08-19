@@ -126,15 +126,22 @@ fn rollback<M: PageTableMapper>(mapper: &mut M, pages: &[Option<MappedPage>; MAX
 }
 
 fn flags_from_elf(flags: u32) -> Option<MappingFlags> {
-    let readable = flags & 4 != 0;
     let writable = flags & 2 != 0;
     let executable = flags & 1 != 0;
-    if writable && executable { return None; }
-    match (readable, writable, executable) {
-        (true, false, false) => Some(MappingFlags::read_only()),
-        (true, true, false) => Some(MappingFlags::read_write()),
-        (true, false, true) => Some(MappingFlags::read_execute()),
-        _ => None,
+
+    // x86 user pages do not expose an independent read permission bit. A
+    // writable page is necessarily readable, so PF_W without PF_R maps to
+    // read/write. Likewise, executable user text is readable in practice, so
+    // PF_X without PF_R maps to read/execute. W+X remains forbidden.
+    if writable && executable {
+        return None;
+    }
+
+    match (writable, executable) {
+        (false, false) => Some(MappingFlags::read_only()),
+        (true, false) => Some(MappingFlags::read_write()),
+        (false, true) => Some(MappingFlags::read_execute()),
+        (true, true) => None,
     }
 }
 
@@ -144,9 +151,12 @@ mod tests {
     use crate::memory::MappingFlags;
 
     #[test]
-    fn translates_elf_permissions() {
+    fn translates_elf_permissions_without_requiring_pf_r() {
+        assert_eq!(flags_from_elf(0), Some(MappingFlags::read_only()));
         assert_eq!(flags_from_elf(4), Some(MappingFlags::read_only()));
+        assert_eq!(flags_from_elf(2), Some(MappingFlags::read_write()));
         assert_eq!(flags_from_elf(6), Some(MappingFlags::read_write()));
+        assert_eq!(flags_from_elf(1), Some(MappingFlags::read_execute()));
         assert_eq!(flags_from_elf(5), Some(MappingFlags::read_execute()));
         assert_eq!(flags_from_elf(3), None);
     }
