@@ -82,7 +82,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     serial::write_usize(image.load_plan().count());
                     serial::write_str("\r\n");
                     serial::write_str("X11-OS: userspace process image prepared\r\n");
-                    Some(image)
+                    Some((bytes, image))
                 }
                 Err(_) => {
                     serial::write_str("X11-OS: userspace process image preparation failed\r\n");
@@ -209,36 +209,42 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     }
 
-    let prepared_userspace = match (userspace_image, physical_mapping) {
-        (Some(image), Some(mapping)) => match ramdisk::bytes(boot_info) {
-            Ok(bytes) => match process::ElfImage::parse(bytes) {
-                Ok(elf) => match unsafe {
-                    arch::x86_64::process_loader::load_process_image(mapping, &mut frame_allocator, image, elf)
-                } {
-                    Ok((root, populated)) => {
-                        serial::write_str("X11-OS: userspace address space mapped\r\n");
-                        serial::write_str("X11-OS: userspace image populated\r\n");
-                        Some((root, populated))
-                    }
+    let prepared_user_launch = match (userspace_image, physical_mapping) {
+        (Some((bytes, image)), Some(mapping)) => {
+            match process::ElfImage::parse(bytes) {
+                Ok(elf) => match unsafe { arch::x86_64::process_loader::load_process_image(mapping, &mut frame_allocator, image, elf) } {
+                    Ok((root, populated)) => match process::UserLaunchPlan::from_populated(populated) {
+                        Ok(plan) => match arch::x86_64::user_launch::prepare_launch(root, plan) {
+                            Ok(prepared) => {
+                                serial::write_str("X11-OS: userspace address space populated\r\n");
+                                serial::write_str("X11-OS: userspace launch prepared\r\n");
+                                Some(prepared)
+                            }
+                            Err(_) => {
+                                serial::write_str("X11-OS: userspace launch preparation failed\r\n");
+                                None
+                            }
+                        },
+                        Err(_) => {
+                            serial::write_str("X11-OS: userspace launch plan validation failed\r\n");
+                            None
+                        }
+                    },
                     Err(_) => {
-                        serial::write_str("X11-OS: userspace address-space load failed\r\n");
+                        serial::write_str("X11-OS: userspace address-space construction failed\r\n");
                         None
                     }
                 },
                 Err(_) => {
-                    serial::write_str("X11-OS: userspace ELF reparse failed\r\n");
+                    serial::write_str("X11-OS: userspace ELF re-parse failed\r\n");
                     None
                 }
-            },
-            Err(_) => {
-                serial::write_str("X11-OS: userspace ramdisk unavailable during load\r\n");
-                None
             }
-        },
+        }
         _ => None,
     };
 
-    let _prepared_userspace = prepared_userspace;
+    let _prepared_user_launch = prepared_user_launch;
 
     let mut runtime = arch::x86_64::runtime::KernelRuntime::new();
     unsafe { runtime.bind_cpu().expect("runtime must bind to bootstrap CPU"); }
