@@ -88,7 +88,8 @@ mod tests {
 
     impl PageTableMapper for FakeMapper {
         type Flush = Flush;
-        fn map_page(&mut self, _: Page4K, _: u64) -> Result<Self::Flush, super::super::MappingError> { unreachable!() }
+        fn allocate_frame(&mut self) -> Option<super::super::PhysRange> { None }
+        fn map_page(&mut self, _: Page4K, _: u64, _: super::super::MappingFlags) -> Result<Self::Flush, super::super::MappingError> { unreachable!() }
         fn unmap_page(&mut self, _: Page4K) -> Result<(u64, Self::Flush), super::super::MappingError> { unreachable!() }
         fn translate(&self, _: u64) -> Option<u64> { None }
         fn page_access(&self, _: u64) -> PageAccess { self.access }
