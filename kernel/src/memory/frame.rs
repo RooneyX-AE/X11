@@ -37,7 +37,7 @@ impl ContiguousFrames {
 
 pub trait FrameAllocator { fn allocate_frame(&mut self) -> Option<Frame>; }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EarlyFrameAllocator<'a> {
     regions: core::slice::Iter<'a, MemoryRegion>,
     current_end: u64,
@@ -50,13 +50,13 @@ impl<'a> EarlyFrameAllocator<'a> {
     }
 
     /// Captures the allocator cursor before a transactional construction.
-    pub const fn checkpoint(&self) -> Self {
-        *self
+    pub fn checkpoint(&self) -> Self {
+        self.clone()
     }
 
     /// Restores a previously captured cursor. No frames may be concurrently
     /// allocated while restoring an early-boot checkpoint.
-    pub const fn rollback(&mut self, checkpoint: Self) {
+    pub fn rollback(&mut self, checkpoint: Self) {
         *self = checkpoint;
     }
 
