@@ -5,23 +5,31 @@ use super::user_return::UserReturnFrame;
 
 /// Enter CPL3 from a kernel-created `iretq` frame.
 #[unsafe(naked)]
-pub unsafe extern "sysv64" fn enter_user(frame: *const UserReturnFrame) -> ! {
+pub unsafe extern "sysv64" fn enter_user(frame: *const UserReturnFrame, kernel_stack_top: u64) -> ! {
     core::arch::naked_asm!(
-        "mov rsp, rdi",
+        "mov r11, rdi",
+        "mov rsp, rsi",
+        // Copy the five-word CPL3 frame onto the target task's kernel stack.
+        "push qword ptr [r11 + 32]",
+        "push qword ptr [r11 + 24]",
+        "push qword ptr [r11 + 16]",
+        "push qword ptr [r11 + 8]",
+        "push qword ptr [r11 + 0]",
         "iretq",
     )
 }
 
 /// Restore a task-owned userspace interrupt snapshot and resume through `iretq`.
 ///
-/// The snapshot is expected to live in kernel memory while this routine builds
-/// a fresh five-word privilege-transition frame on the current task's kernel
-/// stack. The target CR3 must already be active.
+/// The snapshot is copied into a fresh five-word privilege-transition frame on
+/// the target task's kernel stack before any GPR is restored. The target CR3
+/// must already be active.
 #[unsafe(naked)]
-pub unsafe extern "sysv64" fn resume_user(state: *const InterruptedState) -> ! {
+pub unsafe extern "sysv64" fn resume_user(state: *const InterruptedState, kernel_stack_top: u64) -> ! {
     core::arch::naked_asm!(
         // Keep the snapshot pointer until every frame word has been copied.
         "mov r11, rdi",
+        "mov rsp, rsi",
         // iretq frame is pushed in reverse pop order: SS, RSP, RFLAGS, CS, RIP.
         "mov rax, [r11 + 168]",
         "push rax",
@@ -75,6 +83,6 @@ mod tests {
 
     #[test]
     fn resume_user_symbol_has_never_returning_abi() {
-        let _ = super::resume_user as unsafe extern "sysv64" fn(*const crate::arch::x86_64::interrupted_state::InterruptedState) -> !;
+        let _ = super::resume_user as unsafe extern "sysv64" fn(*const crate::arch::x86_64::interrupted_state::InterruptedState, u64) -> !;
     }
 }
