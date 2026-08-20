@@ -10,6 +10,7 @@ use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector
 use x86_64::structures::tss::TaskStateSegment;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const KERNEL_ENTRY_STACK_SIZE: usize = 32 * 1024;
 const DOUBLE_FAULT_STACK_SIZE: usize = 32 * 1024;
 
 /// Ring-3 selectors are the single source of truth for the privilege-transition contract.
@@ -24,9 +25,10 @@ const _: () = {
 };
 
 #[repr(align(16))]
-struct AlignedStack([u8; DOUBLE_FAULT_STACK_SIZE]);
+struct AlignedStack<const SIZE: usize>([u8; SIZE]);
 
-static DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; DOUBLE_FAULT_STACK_SIZE]);
+static KERNEL_ENTRY_STACK: AlignedStack<KERNEL_ENTRY_STACK_SIZE> = AlignedStack([0; KERNEL_ENTRY_STACK_SIZE]);
+static DOUBLE_FAULT_STACK: AlignedStack<DOUBLE_FAULT_STACK_SIZE> = AlignedStack([0; DOUBLE_FAULT_STACK_SIZE]);
 static TSS: Once<TaskStateSegment> = Once::new();
 
 struct GdtState {
@@ -43,6 +45,11 @@ static GDT: Once<GdtState> = Once::new();
 pub fn init() {
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
+
+        let kernel_stack_start = x86_64::VirtAddr::from_ptr(core::ptr::addr_of!(KERNEL_ENTRY_STACK));
+        let kernel_stack_end = kernel_stack_start + KERNEL_ENTRY_STACK_SIZE as u64;
+        tss.privilege_stack_table[0] = kernel_stack_end;
+
         let stack_start = x86_64::VirtAddr::from_ptr(core::ptr::addr_of!(DOUBLE_FAULT_STACK));
         let stack_end = stack_start + DOUBLE_FAULT_STACK_SIZE as u64;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
@@ -101,7 +108,7 @@ pub fn user_data_selector() -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+    use super::{KERNEL_ENTRY_STACK_SIZE, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
     #[test]
     fn ring3_selector_contract_is_stable() {
@@ -109,5 +116,10 @@ mod tests {
         assert_eq!(USER_CODE_SELECTOR, 0x1b);
         assert_eq!(USER_DATA_SELECTOR & 3, 3);
         assert_eq!(USER_CODE_SELECTOR & 3, 3);
+    }
+
+    #[test]
+    fn kernel_entry_stack_has_expected_size() {
+        assert_eq!(KERNEL_ENTRY_STACK_SIZE, 32 * 1024);
     }
 }
