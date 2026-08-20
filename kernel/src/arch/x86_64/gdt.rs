@@ -3,11 +3,14 @@
 //! Descriptor details remain inside the architecture layer. Scheduler and
 //! userspace code consume stable contracts instead of selector/table layout.
 
+use core::cell::UnsafeCell;
+
 use spin::Once;
 use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
 use x86_64::instructions::tables::load_tss;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
+use x86_64::VirtAddr;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const KERNEL_ENTRY_STACK_SIZE: usize = 32 * 1024;
@@ -29,7 +32,20 @@ struct AlignedStack<const SIZE: usize>([u8; SIZE]);
 
 static KERNEL_ENTRY_STACK: AlignedStack<KERNEL_ENTRY_STACK_SIZE> = AlignedStack([0; KERNEL_ENTRY_STACK_SIZE]);
 static DOUBLE_FAULT_STACK: AlignedStack<DOUBLE_FAULT_STACK_SIZE> = AlignedStack([0; DOUBLE_FAULT_STACK_SIZE]);
-static TSS: Once<TaskStateSegment> = Once::new();
+
+struct TssCell(UnsafeCell<TaskStateSegment>);
+
+unsafe impl Sync for TssCell {}
+
+impl TssCell {
+    const fn new(value: TaskStateSegment) -> Self { Self(UnsafeCell::new(value)) }
+
+    unsafe fn get(&self) -> &TaskStateSegment { unsafe { &*self.0.get() } }
+
+    unsafe fn get_mut(&self) -> &mut TaskStateSegment { unsafe { &mut *self.0.get() } }
+}
+
+static TSS: Once<TssCell> = Once::new();
 
 struct GdtState {
     table: GlobalDescriptorTable,
@@ -46,14 +62,14 @@ pub fn init() {
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
 
-        let kernel_stack_start = x86_64::VirtAddr::from_ptr(core::ptr::addr_of!(KERNEL_ENTRY_STACK));
+        let kernel_stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(KERNEL_ENTRY_STACK));
         let kernel_stack_end = kernel_stack_start + KERNEL_ENTRY_STACK_SIZE as u64;
         tss.privilege_stack_table[0] = kernel_stack_end;
 
-        let stack_start = x86_64::VirtAddr::from_ptr(core::ptr::addr_of!(DOUBLE_FAULT_STACK));
+        let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(DOUBLE_FAULT_STACK));
         let stack_end = stack_start + DOUBLE_FAULT_STACK_SIZE as u64;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_end;
-        tss
+        TssCell::new(tss)
     });
 
     let state = GDT.call_once(|| {
@@ -62,7 +78,7 @@ pub fn init() {
         let kernel_data = table.append(Descriptor::kernel_data_segment());
         let user_data = table.append(Descriptor::user_data_segment());
         let user_code = table.append(Descriptor::user_code_segment());
-        let tss_selector = table.append(Descriptor::tss_segment(tss));
+        let tss_selector = table.append(Descriptor::tss_segment(unsafe { tss.get() }));
 
         let actual_user_data = (user_data.index() << 3) | 3;
         let actual_user_code = (user_code.index() << 3) | 3;
@@ -92,6 +108,19 @@ pub fn init() {
         SS::set_reg(state.kernel_data);
         load_tss(state.tss_selector);
     }
+}
+
+/// Update the Ring3 -> Ring0 privilege-entry stack for the current CPU.
+///
+/// # Safety
+/// Callers must execute in kernel context with preemption/interrupts excluded
+/// from the update and ensure `stack_top` is the top of a live kernel stack
+/// owned by the task that is about to become the current CPU task. The current
+/// implementation is single-CPU; SMP will replace this storage with per-CPU
+/// TSS state before enabling multiple CPUs.
+pub unsafe fn set_kernel_stack_top(stack_top: u64) {
+    let tss = TSS.get().expect("x86_64 GDT/TSS must be initialized");
+    unsafe { tss.get_mut().privilege_stack_table[0] = VirtAddr::new(stack_top); }
 }
 
 pub fn kernel_code_selector() -> Option<u16> {
