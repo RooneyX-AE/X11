@@ -37,9 +37,13 @@ pub mod user_return;
 pub mod user_copy;
 pub mod user_successor;
 pub mod user_return_transfer;
+pub mod user_return_validation;
 pub mod user_transfer;
 pub mod voluntary_switch;
 pub mod yield_switch;
+pub mod page_table_probe;
+pub mod pcid;
+pub mod tlb;
 mod gdt;
 mod idt;
 pub mod page_table;
@@ -57,8 +61,22 @@ fn enable_nxe() {
     }
 }
 
+fn enable_pcid_if_supported() {
+    let features = paging::CpuFeatures::detect();
+    if !features.pcid() { return; }
+
+    let (_, cr3_low_bits) = x86_64::registers::control::Cr3::read_raw();
+    if cr3_low_bits != 0 { return; }
+
+    use x86_64::registers::control::{Cr4, Cr4Flags};
+    if !Cr4::read().contains(Cr4Flags::PCID) {
+        unsafe { Cr4::update(|flags| flags.insert(Cr4Flags::PCID)); }
+    }
+}
+
 pub fn init() {
     enable_nxe();
+    enable_pcid_if_supported();
     gdt::init();
     idt::init();
 }

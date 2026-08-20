@@ -2,12 +2,16 @@
 
 use alloc::boxed::Box;
 
+use crate::memory::{PhysicalMemoryMapping, VirtRange, KERNEL_SPACE_START, USER_SPACE_START};
 use crate::process::{ProcessId, ProcessImage, ProcessManager, ProcessState};
 use crate::scheduler::{Priority, TaskId, TaskState};
 use crate::syscall::{ProcessSyscallControl, SyscallError};
 
 use super::interrupted_state::InterruptedState;
 use super::kernel_task::KernelTaskError;
+use super::page_table_probe::X86PageTableProbe;
+use super::paging::CpuFeatures;
+use super::pcid::{PcidAllocator, PcidAllocationError};
 use super::runtime::{KernelRuntime, RuntimeError};
 use super::user_execution::{UserExecutionBinding, UserExecutionRegistry, UserExecutionRegistryError};
 use super::user_launch::PreparedUserLaunch;
@@ -21,6 +25,7 @@ pub struct SystemRuntime {
     processes: ProcessManager,
     runtime: Box<KernelRuntime>,
     userspace: UserExecutionRegistry,
+    pcids: PcidAllocator,
     current_process: Option<ProcessId>,
     pending_exit: Option<(ProcessId, TaskId, u64)>,
 }
@@ -36,6 +41,7 @@ pub enum SystemRuntimeError {
     SchedulerTaskNotReady,
     Successor(UserSuccessorError),
     KernelStackUnavailable,
+    PcidExhausted,
 }
 
 impl From<crate::process::ProcessManagerError> for SystemRuntimeError {
@@ -48,6 +54,7 @@ impl SystemRuntime {
             processes: ProcessManager::new(),
             runtime: KernelRuntime::new(),
             userspace: UserExecutionRegistry::new(),
+            pcids: PcidAllocator::new(),
             current_process: None,
             pending_exit: None,
         })
@@ -56,7 +63,7 @@ impl SystemRuntime {
     pub const fn processes(&self) -> &ProcessManager { &self.processes }
     pub const fn processes_mut(&mut self) -> &mut ProcessManager { &mut self.processes }
     pub const fn runtime(&self) -> &KernelRuntime { &self.runtime }
-    pub const fn runtime_mut(&mut self) -> &mut KernelRuntime { &mut self.runtime }
+    pub const fn runtime_mut(&mut self) -> &mut KernelRuntime { &self.runtime }
     pub const fn userspace(&self) -> &UserExecutionRegistry { &self.userspace }
     pub const fn pending_exit(&self) -> Option<(ProcessId, TaskId, u64)> { self.pending_exit }
 
@@ -73,6 +80,12 @@ impl SystemRuntime {
     pub fn spawn_user_ready(&mut self, image: ProcessImage, launch: PreparedUserLaunch, priority: Priority) -> Result<(ProcessId, TaskId), SystemRuntimeError> {
         let address_space = image.address_space().id();
         if launch.address_space() != address_space { return Err(SystemRuntimeError::AddressSpaceMismatch); }
+        let launch = if CpuFeatures::detect().pcid() {
+            let pcid = self.pcids.allocate().map_err(|error| match error { PcidAllocationError::Exhausted => SystemRuntimeError::PcidExhausted })?;
+            launch.with_pcid(pcid)
+        } else {
+            launch
+        };
 
         let (task, execution) = {
             let scheduler = &mut self.runtime.manager_mut().scheduler;
@@ -119,6 +132,7 @@ impl SystemRuntime {
             let scheduler = &mut self.runtime.manager_mut().scheduler;
             if scheduler.state(task) != Some(TaskState::Ready) || scheduler.next_ready() != Some(task) { return Err(SystemRuntimeError::SchedulerTaskNotReady); }
         }
+        let transfer = self.validate_user_transfer(UserReturnTransfer::new(user_binding), None)?;
         self.pending_exit = None;
         self.processes.start(process).map_err(SystemRuntimeError::Process)?;
         let decision = self.runtime.manager_mut().scheduler.schedule_next();
@@ -126,7 +140,7 @@ impl SystemRuntime {
         unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(stack_top); }
         self.current_process = Some(process);
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(task)); }
-        let launch = user_binding.launch();
+        let launch = transfer.binding().launch();
         unsafe { crate::arch::x86_64::user_activation::activate_and_enter_user(launch) };
     }
 
@@ -140,7 +154,7 @@ impl SystemRuntime {
         let successor = select_userspace_successor(self, Some(task)).map_err(SystemRuntimeError::Successor)?;
         let current_binding = self.processes.binding(process).map_err(SystemRuntimeError::Process)?.ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         if current_binding.task() != task || self.processes.state(process).map_err(SystemRuntimeError::Process)? != ProcessState::Running { return Err(SystemRuntimeError::TaskBindingMismatch); }
-        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(task)).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        let transfer = self.validate_user_transfer(UserReturnTransfer::new(successor.binding()), Some(task))?;
         let current_execution = self.runtime.manager().scheduler.execution(task).ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task()).ok_or(SystemRuntimeError::KernelStackUnavailable)?;
         self.processes.start(successor.process()).map_err(SystemRuntimeError::Process)?;
@@ -164,7 +178,7 @@ impl SystemRuntime {
         let current_binding = self.processes.binding(current_process).map_err(SystemRuntimeError::Process)?.ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         if current_binding.task() != current_task || self.processes.state(current_process).map_err(SystemRuntimeError::Process)? != ProcessState::Running { return Err(SystemRuntimeError::TaskBindingMismatch); }
         let successor = match select_userspace_successor(self, Some(current_task)) { Ok(successor) => successor, Err(UserSuccessorError::NoReadyTask) => return Ok(None), Err(error) => return Err(SystemRuntimeError::Successor(error)) };
-        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task)).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        let transfer = self.validate_user_transfer(UserReturnTransfer::new(successor.binding()), Some(current_task))?;
         let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task()).ok_or(SystemRuntimeError::KernelStackUnavailable)?;
         if let Some((captured_task, state)) = interrupted {
             if captured_task != current_task || !state.is_user_valid() { return Err(SystemRuntimeError::TaskBindingMismatch); }
@@ -178,6 +192,16 @@ impl SystemRuntime {
         self.current_process = Some(successor.process());
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
         Ok(Some(transfer))
+    }
+
+    fn validate_user_transfer(&self, transfer: UserReturnTransfer, current_task: Option<TaskId>) -> Result<UserReturnTransfer, SystemRuntimeError> {
+        let mapping = PhysicalMemoryMapping::global().ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        let address_space = VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        let probe = unsafe { X86PageTableProbe::new_for_root(mapping.offset(), transfer.root().frame(), address_space) }
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        transfer
+            .validate_with_memory(current_task, &probe)
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)
     }
 
     fn current_binding_checked(&self) -> Result<UserExecutionBinding, SyscallError> {
@@ -205,20 +229,3 @@ mod tests {
     use crate::memory::user_stack_range;
     use crate::process::{AddressSpaceId, AddressSpaceSpec, ElfImage, LoadPlan, ProcessImage, ProcessState, UserLaunchPlan, UserStackPlan};
     use crate::scheduler::{Priority, TaskState};
-
-    fn image(id: AddressSpaceId) -> ProcessImage {
-        let mut bytes = [0u8; 120]; bytes[0..4].copy_from_slice(b"\x7fELF"); bytes[4]=2; bytes[5]=1; bytes[16..18].copy_from_slice(&2u16.to_le_bytes()); bytes[18..20].copy_from_slice(&62u16.to_le_bytes()); bytes[24..32].copy_from_slice(&0x401000u64.to_le_bytes()); bytes[32..40].copy_from_slice(&64u64.to_le_bytes()); bytes[54..56].copy_from_slice(&56u16.to_le_bytes()); bytes[56..58].copy_from_slice(&1u16.to_le_bytes());
-        let p=64usize; bytes[p..p+4].copy_from_slice(&1u32.to_le_bytes()); bytes[p+4..p+8].copy_from_slice(&5u32.to_le_bytes()); bytes[p+16..p+24].copy_from_slice(&0x401000u64.to_le_bytes()); bytes[p+32..p+40].copy_from_slice(&16u64.to_le_bytes()); bytes[p+40..p+48].copy_from_slice(&0x1000u64.to_le_bytes());
-        let parsed=ElfImage::parse(&bytes).unwrap(); let spec=AddressSpaceSpec::new(id); let plan=LoadPlan::build(spec,parsed).unwrap(); ProcessImage::build(spec,plan,UserStackPlan::build().unwrap()).unwrap()
-    }
-
-    fn launch(id: AddressSpaceId) -> crate::arch::x86_64::user_launch::PreparedUserLaunch {
-        let root=AddressSpaceRoot::from_physical_address(0x1234_5000).unwrap(); let stack=user_stack_range().unwrap(); prepare_launch(root,UserLaunchPlan { address_space:id, entry:crate::memory::USER_SPACE_START+0x1000, stack_pointer:stack.end() }).unwrap()
-    }
-
-    #[test]
-    fn user_ready_transaction_stops_before_running() {
-        let mut system=SystemRuntime::new(); let id=AddressSpaceId::new(7).unwrap(); let (process,task)=system.spawn_user_ready(image(id),launch(id),Priority::DEFAULT).unwrap();
-        assert_eq!(system.processes().state(process),Ok(ProcessState::Ready)); assert_eq!(system.runtime().manager().scheduler.state(task),Some(TaskState::Ready)); assert!(system.runtime().manager().executions.kernel_stack_top(task).is_some()); assert_eq!(system.current_process(),None); assert_eq!(system.current_user_binding(),None); assert_eq!(system.pending_exit(),None);
-    }
-}

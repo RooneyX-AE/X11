@@ -4,6 +4,7 @@
 //! packages the exact successor state that the terminal architectural return
 //! path must activate before constructing a CPL3 `iretq` frame.
 
+use crate::memory::UserMemoryView;
 use crate::process::ProcessId;
 use crate::scheduler::TaskId;
 
@@ -11,6 +12,7 @@ use super::address_space::AddressSpaceRoot;
 use super::interrupted_state::InterruptedState;
 use super::user_execution::UserExecutionBinding;
 use super::user_return::UserReturnFrame;
+use super::user_return_validation::{validate_user_resume, validate_user_return_frame, UserReturnTargetError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UserReturnTransfer {
@@ -30,6 +32,16 @@ impl UserReturnTransfer {
     pub const fn root(self) -> AddressSpaceRoot { self.binding.launch().root() }
     pub const fn frame(self) -> UserReturnFrame { self.binding.launch().frame() }
     pub const fn resume(self) -> Option<InterruptedState> { self.binding.resume() }
+
+    pub fn validate_with_memory<M: UserMemoryView>(self, current_task: Option<TaskId>, memory: &M) -> Result<Self, UserReturnTransferError> {
+        let transfer = self.validate(current_task)?;
+        if let Some(state) = transfer.resume() {
+            validate_user_resume(memory, state).map_err(UserReturnTransferError::InvalidReturnTarget)?;
+        } else {
+            validate_user_return_frame(memory, transfer.frame()).map_err(UserReturnTransferError::InvalidReturnTarget)?;
+        }
+        Ok(transfer)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +50,7 @@ pub enum UserReturnTransferError {
     InvalidSelectors,
     InvalidRflags,
     InvalidResumeState,
+    InvalidReturnTarget(UserReturnTargetError),
 }
 
 impl UserReturnTransfer {
@@ -65,7 +78,7 @@ mod tests {
     use crate::arch::x86_64::interrupted_state::InterruptedState;
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::arch::x86_64::user_launch::prepare_launch;
-    use crate::memory::{user_stack_range, USER_SPACE_START};
+    use crate::memory::{PageAccess, UserMemoryView, VirtRange, user_stack_range, USER_SPACE_START, KERNEL_SPACE_START};
     use crate::process::{AddressSpaceId, ProcessId, UserLaunchPlan};
     use crate::scheduler::TaskId;
 
@@ -93,6 +106,31 @@ mod tests {
         unsafe { InterruptedState::capture(&registers, frame) }
     }
 
+    struct FakeMemory {
+        instruction: PageAccess,
+        stack: PageAccess,
+    }
+
+    impl UserMemoryView for FakeMemory {
+        fn translate(&self, virtual_address: u64) -> Option<u64> {
+            if !(USER_SPACE_START..KERNEL_SPACE_START).contains(&virtual_address) { None } else { Some(virtual_address) }
+        }
+
+        fn page_access(&self, virtual_address: u64) -> PageAccess {
+            let stack = user_stack_range().unwrap();
+            if stack.start() <= virtual_address && virtual_address <= stack.end() { self.stack } else { self.instruction }
+        }
+
+        fn address_space(&self) -> VirtRange { VirtRange::new(USER_SPACE_START, KERNEL_SPACE_START).unwrap() }
+    }
+
+    fn valid_memory() -> FakeMemory {
+        FakeMemory {
+            instruction: PageAccess { mapped: true, user: true, readable: true, writable: false, executable: true },
+            stack: PageAccess { mapped: true, user: true, readable: true, writable: true, executable: false },
+        }
+    }
+
     #[test]
     fn transfer_rejects_current_task() {
         let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
@@ -108,6 +146,12 @@ mod tests {
     }
 
     #[test]
+    fn transfer_accepts_valid_initial_frame_with_memory_validation() {
+        let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
+        assert_eq!(transfer.validate_with_memory(None, &valid_memory()), Ok(transfer));
+    }
+
+    #[test]
     fn transfer_accepts_valid_resume_snapshot() {
         let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
         let mut binding = transfer.binding();
@@ -115,6 +159,20 @@ mod tests {
         let transfer = UserReturnTransfer::new(binding);
         assert_eq!(transfer.validate(None), Ok(transfer));
         assert_eq!(transfer.resume().unwrap().registers().rax, 7);
+    }
+
+    #[test]
+    fn transfer_rejects_non_executable_resume_target() {
+        let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
+        let mut binding = transfer.binding();
+        binding.install_resume(user_state(USER_SPACE_START + 0x5000, 7)).unwrap();
+        let transfer = UserReturnTransfer::new(binding);
+        let mut memory = valid_memory();
+        memory.instruction.executable = false;
+        assert!(matches!(
+            transfer.validate_with_memory(None, &memory),
+            Err(UserReturnTransferError::InvalidReturnTarget(UserReturnTargetError::InstructionPageNotExecutable))
+        ));
     }
 
     #[test]
@@ -127,12 +185,10 @@ mod tests {
         a_binding.install_resume(a_state).unwrap();
         let a_resume = UserReturnTransfer::new(a_binding);
 
-        // A -> B: successor B has never run, so it must use its initial launch frame.
         let b_transfer = b;
         assert!(b_transfer.resume().is_none());
         assert_eq!(b_transfer.validate(Some(a_transfer_task(a_resume))).is_ok(), true);
 
-        // B -> A: A must return through its saved snapshot, not its original entry point.
         assert_eq!(a_resume.resume().unwrap().return_state().rip(), USER_SPACE_START + 0x7000);
         assert_eq!(a_resume.resume().unwrap().registers().rax, 0xA5);
         assert!(a_resume.validate(Some(b_transfer.task())).is_ok());

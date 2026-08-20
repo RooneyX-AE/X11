@@ -39,7 +39,7 @@ impl ReturnState {
     pub const fn is_user(self) -> bool { self.cs & 3 == 3 }
 
     pub const fn kernel_iret_words(self) -> Option<[u64; 3]> {
-        if !self.is_kernel() || self.rip == 0 || self.rflags & 2 == 0 || self.resume_rsp == 0 {
+        if !self.is_kernel() || self.rip == 0 || self.rflags & 2 == 0 || self.resume_rsp < 24 {
             return None;
         }
         Some([self.rip, self.cs, self.rflags])
@@ -114,6 +114,12 @@ mod tests {
         assert_eq!(snapshot.return_state().ss(), None);
         assert_eq!(snapshot.return_state().resume_rsp(), raw.as_mut_ptr() as u64 + 24);
         assert_eq!(snapshot.return_state().kernel_iret_words(), Some([0x1000, 0x10, 0x202]));
+    }
+
+    #[test]
+    fn rejects_kernel_return_with_insufficient_resume_space() {
+        let state = ReturnState { rip: 0x1000, cs: 0x10, rflags: 0x202, resume_rsp: 23, rsp: None, ss: None };
+        assert!(state.kernel_iret_words().is_none());
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! x86_64 page-table backend.
 
+use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{
-    mapper::{MapToError, MapperFlush, Translate, UnmapError},
+    mapper::{MapToError, Translate, UnmapError},
     FrameAllocator as X86FrameAllocator, Mapper, Page, PageTable, PageTableFlags,
     PhysFrame, Size4KiB,
 };
@@ -12,9 +13,40 @@ use crate::memory::{
     EarlyFrameAllocator, FrameAllocator as X11FrameAllocator, MappingError, MappingFlags,
     MappingFlush, Page4K, PageAccess, PageTableMapper, UserMemoryView, VirtRange,
 };
+use super::pcid::AddressSpacePcid;
 
-pub struct X86Flush(MapperFlush<Size4KiB>);
-impl MappingFlush for X86Flush { fn flush(self) { self.0.flush(); } }
+/// Flush token tied to the address-space root and virtual address that changed.
+///
+/// An inactive address space must not execute INVLPG against the currently
+/// active CR3 context. The token therefore defers the local invalidation until
+/// it can prove that the target root is active.
+pub struct X86Flush {
+    root_physical: u64,
+    virtual_address: x86_64::VirtAddr,
+    pcid: Option<AddressSpacePcid>,
+}
+
+impl MappingFlush for X86Flush {
+    fn flush(self) {
+        let (active_frame, _) = Cr3::read();
+        if active_frame.start_address().as_u64() != self.root_physical {
+            return;
+        }
+
+        if crate::arch::x86_64::paging::CpuFeatures::detect().pcid() {
+            if let Some(pcid) = self.pcid {
+                match crate::arch::x86_64::tlb::invalidate_page(self.virtual_address, Some(pcid)) {
+                    Ok(()) => return,
+                    Err(crate::arch::x86_64::tlb::TlbInvalidationError::PcidUnsupported) => {}
+                    Err(error) => panic!("unexpected PCID invalidation failure: {:?}", error),
+                }
+            }
+        }
+
+        crate::arch::x86_64::tlb::invalidate_page(self.virtual_address, None)
+            .expect("baseline INVLPG invalidation must be available");
+    }
+}
 
 struct FrameAllocatorAdapter<'allocator, 'regions> { inner: &'allocator mut EarlyFrameAllocator<'regions> }
 unsafe impl X86FrameAllocator<Size4KiB> for FrameAllocatorAdapter<'_, '_> {
@@ -42,6 +74,8 @@ pub struct X86PageTableMapper<'allocator, 'regions> {
     inner: x86_64::structures::paging::OffsetPageTable<'static>,
     frame_allocator: FrameAllocatorAdapter<'allocator, 'regions>,
     address_space: VirtRange,
+    root_physical: u64,
+    pcid: Option<AddressSpacePcid>,
 }
 
 impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
@@ -52,8 +86,37 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
         frame_allocator: &'allocator mut EarlyFrameAllocator<'regions>,
         address_space: VirtRange,
     ) -> Self {
+        let (active_frame, _) = Cr3::read();
         let inner = unsafe { paging::init(physical_memory_offset) };
-        Self { inner, frame_allocator: FrameAllocatorAdapter { inner: frame_allocator }, address_space }
+        Self {
+            inner,
+            frame_allocator: FrameAllocatorAdapter { inner: frame_allocator },
+            address_space,
+            root_physical: active_frame.start_address().as_u64(),
+            pcid: None,
+        }
+    }
+
+    /// Creates a mapper over the currently active root with an optional PCID.
+    ///
+    /// # Safety
+    /// `physical_memory_offset` must be the bootloader direct-map offset and
+    /// `pcid`, when present, must identify this address space on the current CPU.
+    pub unsafe fn new_for_current_root_with_pcid(
+        physical_memory_offset: u64,
+        frame_allocator: &'allocator mut EarlyFrameAllocator<'regions>,
+        address_space: VirtRange,
+        pcid: Option<AddressSpacePcid>,
+    ) -> Self {
+        let (active_frame, _) = Cr3::read();
+        let inner = unsafe { paging::init(physical_memory_offset) };
+        Self {
+            inner,
+            frame_allocator: FrameAllocatorAdapter { inner: frame_allocator },
+            address_space,
+            root_physical: active_frame.start_address().as_u64(),
+            pcid,
+        }
     }
 
     /// Creates a mapper over an explicitly supplied level-4 root instead of
@@ -83,7 +146,21 @@ impl<'allocator, 'regions> X86PageTableMapper<'allocator, 'regions> {
                 x86_64::VirtAddr::new(physical_memory_offset),
             )
         };
-        Ok(Self { inner, frame_allocator: FrameAllocatorAdapter { inner: frame_allocator }, address_space })
+        Ok(Self {
+            inner,
+            frame_allocator: FrameAllocatorAdapter { inner: frame_allocator },
+            address_space,
+            root_physical: root.start_address().as_u64(),
+            pcid: None,
+        })
+    }
+
+    fn flush_for(&self, virtual_address: x86_64::VirtAddr) -> X86Flush {
+        X86Flush {
+            root_physical: self.root_physical,
+            virtual_address,
+            pcid: self.pcid,
+        }
     }
 
     fn mapped_flags(&self, virtual_address: u64) -> Option<PageTableFlags> {
@@ -160,8 +237,8 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
         let frame = PhysFrame::<Size4KiB>::from_start_address(PhysAddr::new(physical_address)).map_err(|_| MappingError::InvalidPhysicalAddress)?;
         let target = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
         let flags = Self::translate_flags(mapping_flags, self.address_space.is_user());
-        let flush = unsafe { self.inner.map_to(target, frame, flags, &mut self.frame_allocator) }.map_err(map_to_error)?;
-        Ok(X86Flush(flush))
+        unsafe { self.inner.map_to(target, frame, flags, &mut self.frame_allocator) }.map_err(map_to_error)?;
+        Ok(self.flush_for(x86_64::VirtAddr::new(page.start_address())))
     }
 
     fn unmap_page(&mut self, page: Page4K) -> Result<(u64, Self::Flush), MappingError> {
@@ -170,8 +247,8 @@ impl PageTableMapper for X86PageTableMapper<'_, '_> {
             return Err(MappingError::OutsideAddressSpace);
         }
         let target = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(page.start_address()));
-        let (frame, flush) = self.inner.unmap(target).map_err(unmap_error)?;
-        Ok((frame.start_address().as_u64(), X86Flush(flush)))
+        let (frame, _) = self.inner.unmap(target).map_err(unmap_error)?;
+        Ok((frame.start_address().as_u64(), self.flush_for(x86_64::VirtAddr::new(page.start_address()))))
     }
 }
 

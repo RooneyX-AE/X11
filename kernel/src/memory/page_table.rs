@@ -16,6 +16,7 @@ pub enum MappingError {
     BackendFailure,
 }
 
+#[must_use = "mapping updates must be flushed before the CPU can rely on the new translation"]
 pub trait MappingFlush { fn flush(self); }
 pub type MapResult<F> = Result<F, MappingError>;
 

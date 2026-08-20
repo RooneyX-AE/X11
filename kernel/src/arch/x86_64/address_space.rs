@@ -11,6 +11,8 @@ use x86_64::structures::paging::{PageTable, PhysFrame, Size4KiB};
 
 use crate::memory::{EarlyFrameAllocator, FrameAllocator};
 
+use super::pcid::AddressSpacePcid;
+
 const KERNEL_P4_START: usize = 256;
 const KERNEL_P4_END: usize = 512;
 
@@ -72,6 +74,16 @@ impl AddressSpaceRoot {
 
 pub unsafe fn activate(root: AddressSpaceRoot) {
     unsafe { Cr3::write(root.frame(), Cr3Flags::empty()) };
+}
+
+/// Activates a root using a stable PCID without flushing that PCID's TLB entries.
+///
+/// # Safety
+/// The caller must have enabled CR4.PCIDE, the PCID must uniquely identify this
+/// address space on the current CPU, and the root must be a valid page-table root.
+pub unsafe fn activate_with_pcid(root: AddressSpaceRoot, pcid: AddressSpacePcid) {
+    let hardware_pcid = x86_64::instructions::tlb::Pcid::new(pcid.raw()).expect("validated PCID must fit the architectural 12-bit range");
+    unsafe { Cr3::write_pcid_no_flush(root.frame(), hardware_pcid) };
 }
 
 pub fn active_root() -> AddressSpaceRoot {
