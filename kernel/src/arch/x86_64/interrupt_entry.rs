@@ -126,13 +126,9 @@ extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mu
         if system.current_user_binding().is_some() {
             match crate::arch::x86_64::cpu_local::local().take_syscall_action() {
                 Some(crate::syscall::SyscallReturnAction::Reschedule) => {
-                    let snapshot = crate::arch::x86_64::cpu_local::local().interrupted()
-                        .map(|(task, state)| (task, state));
-                    match system.commit_userspace_yield_with_snapshot(snapshot.map(|(_, state)| state)) {
+                    let snapshot = crate::arch::x86_64::cpu_local::local().interrupted();
+                    match system.commit_userspace_yield_with_snapshot(snapshot) {
                         Ok(Some(transfer)) => {
-                            // The snapshot has now been copied into the current task's
-                            // task-owned resume slot. The CPU-local mailbox can be cleared
-                            // before the diverging transfer takes the successor to CPL3.
                             let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
                             unsafe { crate::arch::x86_64::user_transfer::execute_user_transfer(transfer) }
                         }
