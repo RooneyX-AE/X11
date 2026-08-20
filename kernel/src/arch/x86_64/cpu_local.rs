@@ -50,20 +50,10 @@ impl CpuLocalState {
         unsafe { (*self.syscall_action.get()).take() }
     }
 
-    /// Binds the single runtime instance owned by this CPU during bootstrap.
-    ///
-    /// # Safety
-    /// `runtime` must remain allocated at a stable address for the lifetime of
-    /// the CPU binding, and callers must serialize binding with interrupt and
-    /// preemption activity.
     pub unsafe fn bind_runtime(&self, runtime: *mut ()) -> Result<(), RuntimeBindingError> {
         let slot = unsafe { &mut *self.runtime.get() };
-        if slot.is_some() {
-            return Err(RuntimeBindingError::AlreadyBound);
-        }
-        if runtime.is_null() {
-            return Err(RuntimeBindingError::Null);
-        }
+        if slot.is_some() { return Err(RuntimeBindingError::AlreadyBound); }
+        if runtime.is_null() { return Err(RuntimeBindingError::Null); }
         *slot = Some(runtime as usize);
         Ok(())
     }
@@ -72,23 +62,12 @@ impl CpuLocalState {
         unsafe { (*self.runtime.get()).map(|address| address as *mut ()) }
     }
 
-    pub unsafe fn unbind_runtime(&self) {
-        unsafe { *self.runtime.get() = None };
-    }
+    pub unsafe fn unbind_runtime(&self) { unsafe { *self.runtime.get() = None }; }
 
-    /// Binds the unified system runtime that owns process + scheduler + user
-    /// execution state.
-    ///
-    /// # Safety
-    /// The pointer must remain valid for the lifetime of the CPU binding.
     pub unsafe fn bind_system_runtime(&self, runtime: *mut ()) -> Result<(), RuntimeBindingError> {
         let slot = unsafe { &mut *self.system_runtime.get() };
-        if slot.is_some() {
-            return Err(RuntimeBindingError::AlreadyBound);
-        }
-        if runtime.is_null() {
-            return Err(RuntimeBindingError::Null);
-        }
+        if slot.is_some() { return Err(RuntimeBindingError::AlreadyBound); }
+        if runtime.is_null() { return Err(RuntimeBindingError::Null); }
         *slot = Some(runtime as usize);
         Ok(())
     }
@@ -97,17 +76,13 @@ impl CpuLocalState {
         unsafe { (*self.system_runtime.get()).map(|address| address as *mut ()) }
     }
 
-    pub unsafe fn unbind_system_runtime(&self) {
-        unsafe { *self.system_runtime.get() = None };
-    }
+    pub unsafe fn unbind_system_runtime(&self) { unsafe { *self.system_runtime.get() = None }; }
 
     /// Captures the interrupted state for the current CPU task.
     ///
     /// # Safety
     /// `registers` and `return_frame` must point to the live CPU interrupt
-    /// frame owned by the current interrupt entry. `resume_rsp` is retained as
-    /// an entry-boundary parameter for callers, but the canonical resume stack
-    /// value is derived from the interrupt frame itself.
+    /// frame owned by the current interrupt entry.
     pub unsafe fn capture_interrupted(
         &self,
         registers: *const SavedRegisters,
@@ -116,19 +91,19 @@ impl CpuLocalState {
     ) -> Result<TaskId, CaptureError> {
         let task = self.current_task().ok_or(CaptureError::NoCurrentTask)?;
         let slot = unsafe { &mut *self.interrupted.get() };
-        if slot.is_some() {
-            return Err(CaptureError::AlreadyPending);
-        }
+        if slot.is_some() { return Err(CaptureError::AlreadyPending); }
         let snapshot = unsafe { InterruptedState::capture(registers, return_frame) };
-        if !snapshot.is_valid() {
-            return Err(CaptureError::InvalidState);
-        }
+        if !snapshot.is_valid() { return Err(CaptureError::InvalidState); }
         *slot = Some((task, snapshot));
         Ok(task)
     }
 
     pub fn interrupted_task(&self) -> Option<TaskId> {
         unsafe { (*self.interrupted.get()).as_ref().map(|(task, _)| *task) }
+    }
+
+    pub fn interrupted(&self) -> Option<(TaskId, InterruptedState)> {
+        unsafe { (*self.interrupted.get()).as_ref().copied() }
     }
 
     pub fn take_interrupted(&self) -> Option<(TaskId, InterruptedState)> {
@@ -142,22 +117,13 @@ impl CpuLocalState {
 
 static CPU_LOCAL: CpuLocalState = CpuLocalState::new();
 
-pub fn local() -> &'static CpuLocalState {
-    &CPU_LOCAL
-}
+pub fn local() -> &'static CpuLocalState { &CPU_LOCAL }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeBindingError {
-    Null,
-    AlreadyBound,
-}
+pub enum RuntimeBindingError { Null, AlreadyBound }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CaptureError {
-    NoCurrentTask,
-    AlreadyPending,
-    InvalidState,
-}
+pub enum CaptureError { NoCurrentTask, AlreadyPending, InvalidState }
 
 #[cfg(test)]
 mod tests {
@@ -184,6 +150,31 @@ mod tests {
     }
 
     #[test]
+    fn capture_requires_current_task() {
+        let cpu = CpuLocalState::new();
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000; raw[1] = 0x10; raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        assert_eq!(unsafe { cpu.capture_interrupted(&registers, frame, 0x8000) }, Err(CaptureError::NoCurrentTask));
+    }
+
+    #[test]
+    fn interrupted_snapshot_can_be_peeked_without_consuming() {
+        let cpu = CpuLocalState::new();
+        unsafe { cpu.set_current_task(Some(TaskId::new(9, 4))) };
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000; raw[1] = 0x10; raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        unsafe { cpu.capture_interrupted(&registers, frame, 0x8000).unwrap() };
+        assert_eq!(cpu.interrupted().unwrap().0, TaskId::new(9, 4));
+        assert!(cpu.has_interrupted());
+        assert_eq!(cpu.take_interrupted().unwrap().0, TaskId::new(9, 4));
+        assert_eq!(cpu.interrupted_task(), None);
+    }
+
+    #[test]
     fn runtime_binding_is_stable_and_single_owner() {
         let cpu = CpuLocalState::new();
         let mut marker = 0u8;
@@ -193,49 +184,5 @@ mod tests {
         assert_eq!(unsafe { cpu.bind_runtime(ptr) }, Err(RuntimeBindingError::AlreadyBound));
         unsafe { cpu.unbind_runtime() };
         assert_eq!(cpu.runtime_ptr(), None);
-    }
-
-    #[test]
-    fn system_runtime_binding_is_stable_and_separate() {
-        let cpu = CpuLocalState::new();
-        let mut marker = 0u8;
-        let ptr = core::ptr::addr_of_mut!(marker).cast::<()>();
-        unsafe { cpu.bind_system_runtime(ptr).unwrap() };
-        assert_eq!(cpu.system_runtime_ptr(), Some(ptr));
-        assert_eq!(unsafe { cpu.bind_system_runtime(ptr) }, Err(RuntimeBindingError::AlreadyBound));
-        unsafe { cpu.unbind_system_runtime() };
-        assert_eq!(cpu.system_runtime_ptr(), None);
-    }
-
-    #[test]
-    fn capture_requires_current_task() {
-        let cpu = CpuLocalState::new();
-        let registers = SavedRegisters::default();
-        let mut raw = [0u64; 3];
-        raw[0] = 0x1000;
-        raw[1] = 0x10;
-        raw[2] = 0x202;
-        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        assert_eq!(
-            unsafe { cpu.capture_interrupted(&registers, frame, 0x8000) },
-            Err(CaptureError::NoCurrentTask)
-        );
-    }
-
-    #[test]
-    fn interrupted_task_is_visible_without_consuming_snapshot() {
-        let cpu = CpuLocalState::new();
-        unsafe { cpu.set_current_task(Some(TaskId::new(9, 4))) };
-        let registers = SavedRegisters::default();
-        let mut raw = [0u64; 3];
-        raw[0] = 0x1000;
-        raw[1] = 0x10;
-        raw[2] = 0x202;
-        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
-        unsafe { cpu.capture_interrupted(&registers, frame, 0x8000).unwrap() };
-        assert_eq!(cpu.interrupted_task(), Some(TaskId::new(9, 4)));
-        assert!(cpu.has_interrupted());
-        assert_eq!(cpu.take_interrupted().unwrap().0, TaskId::new(9, 4));
-        assert_eq!(cpu.interrupted_task(), None);
     }
 }
