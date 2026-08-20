@@ -154,13 +154,13 @@ impl SystemRuntime {
         if self.processes.state(process).map_err(SystemRuntimeError::Process)? != ProcessState::Ready {
             return Err(SystemRuntimeError::Process(crate::process::ProcessManagerError::InvalidTransition));
         }
+        let stack_top = self.runtime.manager().executions.kernel_stack_top(binding.task())
+            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
+
         let scheduler = &mut self.runtime.manager_mut().scheduler;
         if scheduler.state(binding.task()) != Some(TaskState::Ready) || scheduler.next_ready() != Some(binding.task()) {
             return Err(SystemRuntimeError::SchedulerTaskNotReady);
         }
-
-        let stack_top = self.runtime.manager().executions.kernel_stack_top(binding.task())
-            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
 
         self.pending_exit = None;
         self.processes.start(process).map_err(SystemRuntimeError::Process)?;
@@ -201,8 +201,6 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
-        // Validate every failure-prone architectural input before destructive
-        // lifecycle mutation. The successor must already own a live kernel stack.
         let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(task))
             .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         let current_execution = self.runtime.manager().scheduler.execution(task)
@@ -226,9 +224,6 @@ impl SystemRuntime {
         Ok(transfer)
     }
 
-    /// Commits a userspace voluntary yield. Returns a successor transfer when
-    /// another userspace task is ready, and `None` when the current task should
-    /// simply resume.
     pub fn commit_userspace_yield(&mut self) -> Result<Option<UserReturnTransfer>, SystemRuntimeError> {
         let current_process = self.current_process.ok_or(SystemRuntimeError::NoCurrentProcess)?;
         let current_task = self.runtime.manager().scheduler.current().ok_or(SystemRuntimeError::NoCurrentProcess)?;
@@ -246,8 +241,6 @@ impl SystemRuntime {
             Err(error) => return Err(SystemRuntimeError::Successor(error)),
         };
 
-        // Validate the successor return and kernel stack before mutating process
-        // or scheduler ownership. This keeps the operation transactional.
         let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task))
             .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task())
