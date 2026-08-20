@@ -4,8 +4,6 @@
 //! continuation address. Address-space state, FPU/SIMD state, interrupt state,
 //! and per-thread metadata are deliberately owned by higher layers.
 
-use core::arch::asm;
-
 use super::activation::ActivationRecord;
 
 /// Register state owned by the scheduler's kernel-thread context switch.
@@ -102,17 +100,32 @@ pub fn bootstrap_context(
     })
 }
 
-/// Common entry trampoline for all newly created kernel tasks.
+/// Common naked entry trampoline for all newly created kernel tasks.
+///
+/// `switch` restores the activation pointer into `r12`. This trampoline moves
+/// that value into the SysV64 first argument register and jumps across an
+/// ordinary Rust ABI boundary, so the compiler never has to reason about an
+/// undeclared implicit `r12` input.
 ///
 /// # Safety
-/// `r12` must contain a live pointer to an `ActivationRecord` for the task
-/// being entered. The record must outlive the task's execution.
+/// The restored `r12` value must point to a live `ActivationRecord` for the
+/// task being entered, and the record must outlive the task's execution.
+#[unsafe(naked)]
 extern "C" fn task_trampoline() -> ! {
-    let activation: *const ActivationRecord;
-    unsafe {
-        asm!("mov {}, r12", out(reg) activation, options(nomem, nostack, preserves_flags));
-        ((*activation).entry())();
+    core::arch::naked_asm!(
+        "mov rdi, r12",
+        "jmp {entry}",
+        entry = sym task_entry_dispatch,
+    );
+}
+
+#[inline(never)]
+extern "C" fn task_entry_dispatch(activation: *const ActivationRecord) -> ! {
+    if activation.is_null() {
+        loop { core::hint::spin_loop(); }
     }
+
+    unsafe { ((*activation).entry())() }
 }
 
 pub fn bootstrap_kernel_context(stack_top: u64, activation: &ActivationRecord) -> Option<Context> {
