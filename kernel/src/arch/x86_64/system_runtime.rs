@@ -6,6 +6,7 @@ use crate::process::{ProcessId, ProcessImage, ProcessManager, ProcessState};
 use crate::scheduler::{Priority, TaskId, TaskState};
 use crate::syscall::{ProcessSyscallControl, SyscallError};
 
+use super::kernel_task::KernelTaskError;
 use super::runtime::{KernelRuntime, RuntimeError};
 use super::user_execution::{UserExecutionBinding, UserExecutionRegistry, UserExecutionRegistryError};
 use super::user_launch::PreparedUserLaunch;
@@ -86,26 +87,31 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::AddressSpaceMismatch);
         }
 
-        let scheduler = &mut self.runtime.manager_mut().scheduler;
-        let task = scheduler.create_user_task(priority);
-        let execution = match scheduler.attach_execution(task) {
-            Ok(handle) => handle,
-            Err(error) => {
-                let _ = scheduler.destroy_created(task);
-                return Err(SystemRuntimeError::Runtime(RuntimeError::Task(error.into())));
-            }
+        let (task, execution) = {
+            let scheduler = &mut self.runtime.manager_mut().scheduler;
+            let task = scheduler.create_user_task(priority);
+            let execution = match scheduler.attach_execution(task) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let _ = scheduler.destroy_created(task);
+                    return Err(SystemRuntimeError::Runtime(RuntimeError::Task(error.into())));
+                }
+            };
+            (task, execution)
         };
 
         if let Err(error) = self.runtime.manager_mut().executions.insert(execution, userspace_kernel_stub) {
-            let _ = scheduler.destroy_created(task);
-            return Err(SystemRuntimeError::Runtime(RuntimeError::Task(crate::scheduler::SchedulerError::ExecutionAlreadyAttached.into())));
+            let _ = self.runtime.manager_mut().scheduler.destroy_created(task);
+            return Err(SystemRuntimeError::Runtime(RuntimeError::Task(
+                KernelTaskError::Registry(error),
+            )));
         }
 
         let spawned = match self.processes.spawn_ready(image, task, execution, address_space) {
             Ok(spawned) => spawned,
             Err(error) => {
                 let _ = self.runtime.manager_mut().executions.remove(execution);
-                let _ = scheduler.destroy_created(task);
+                let _ = self.runtime.manager_mut().scheduler.destroy_created(task);
                 return Err(SystemRuntimeError::Process(error));
             }
         };
@@ -115,7 +121,7 @@ impl SystemRuntime {
             Err(_) => {
                 let _ = self.runtime.manager_mut().executions.remove(execution);
                 let _ = self.processes.abort_ready(spawned.id());
-                let _ = scheduler.destroy_created(task);
+                let _ = self.runtime.manager_mut().scheduler.destroy_created(task);
                 return Err(SystemRuntimeError::AddressSpaceMismatch);
             }
         };
@@ -123,15 +129,15 @@ impl SystemRuntime {
         if let Err(error) = self.userspace.insert(binding) {
             let _ = self.runtime.manager_mut().executions.remove(execution);
             let _ = self.processes.abort_ready(spawned.id());
-            let _ = scheduler.destroy_created(task);
+            let _ = self.runtime.manager_mut().scheduler.destroy_created(task);
             return Err(SystemRuntimeError::UserBinding(error));
         }
 
-        if !scheduler.make_ready(task) {
+        if !self.runtime.manager_mut().scheduler.make_ready(task) {
             let _ = self.userspace.remove(task);
             let _ = self.runtime.manager_mut().executions.remove(execution);
             let _ = self.processes.abort_ready(spawned.id());
-            let _ = scheduler.destroy_created(task);
+            let _ = self.runtime.manager_mut().scheduler.destroy_created(task);
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
@@ -153,6 +159,9 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::SchedulerTaskNotReady);
         }
 
+        let stack_top = self.runtime.manager().executions.kernel_stack_top(binding.task())
+            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
+
         self.pending_exit = None;
         self.processes.start(process).map_err(SystemRuntimeError::Process)?;
         let decision = scheduler.schedule_next();
@@ -160,8 +169,6 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
-        let stack_top = self.runtime.manager().executions.kernel_stack_top(binding.task())
-            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
         unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(stack_top); }
 
         self.current_process = Some(process);
@@ -194,12 +201,14 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
-        // Validate the architectural transfer before any destructive lifecycle
-        // mutation. A failed transfer must leave the current owner intact.
+        // Validate every failure-prone architectural input before destructive
+        // lifecycle mutation. The successor must already own a live kernel stack.
         let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(task))
             .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         let current_execution = self.runtime.manager().scheduler.execution(task)
             .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task())
+            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
 
         self.processes.start(successor.process()).map_err(SystemRuntimeError::Process)?;
         self.processes.exit(process).map_err(SystemRuntimeError::Process)?;
@@ -208,9 +217,7 @@ impl SystemRuntime {
         let _ = self.userspace.remove(task).map_err(SystemRuntimeError::UserBinding)?;
         let _ = self.runtime.manager_mut().executions.remove(current_execution);
 
-        let stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task())
-            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
-        unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(stack_top); }
+        unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(successor_stack_top); }
 
         self.current_process = Some(successor.process());
         self.pending_exit = None;
@@ -239,10 +246,12 @@ impl SystemRuntime {
             Err(error) => return Err(SystemRuntimeError::Successor(error)),
         };
 
-        // Validate the successor return before mutating process/scheduler
-        // ownership. This keeps the operation transactional across failure.
+        // Validate the successor return and kernel stack before mutating process
+        // or scheduler ownership. This keeps the operation transactional.
         let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task))
             .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+        let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task())
+            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
 
         self.processes.yield_to(current_process, successor.process())
             .map_err(SystemRuntimeError::Process)?;
@@ -251,9 +260,7 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
-        let stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task())
-            .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
-        unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(stack_top); }
+        unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(successor_stack_top); }
 
         self.current_process = Some(successor.process());
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
