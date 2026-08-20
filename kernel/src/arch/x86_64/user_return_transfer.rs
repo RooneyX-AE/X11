@@ -17,16 +17,18 @@ pub struct UserReturnTransfer {
     process: ProcessId,
     task: TaskId,
     binding: UserExecutionBinding,
+    kernel_stack_top: u64,
 }
 
 impl UserReturnTransfer {
-    pub const fn new(binding: UserExecutionBinding) -> Self {
-        Self { process: binding.process(), task: binding.task(), binding }
+    pub const fn new(binding: UserExecutionBinding, kernel_stack_top: u64) -> Self {
+        Self { process: binding.process(), task: binding.task(), binding, kernel_stack_top }
     }
 
     pub const fn process(self) -> ProcessId { self.process }
     pub const fn task(self) -> TaskId { self.task }
     pub const fn binding(self) -> UserExecutionBinding { self.binding }
+    pub const fn kernel_stack_top(self) -> u64 { self.kernel_stack_top }
     pub const fn root(self) -> AddressSpaceRoot { self.binding.launch().root() }
     pub const fn frame(self) -> UserReturnFrame { self.binding.launch().frame() }
     pub const fn resume(self) -> Option<InterruptedState> { self.binding.resume() }
@@ -35,6 +37,7 @@ impl UserReturnTransfer {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserReturnTransferError {
     CurrentTask,
+    InvalidKernelStack,
     InvalidSelectors,
     InvalidRflags,
     InvalidResumeState,
@@ -43,6 +46,7 @@ pub enum UserReturnTransferError {
 impl UserReturnTransfer {
     pub fn validate(self, current_task: Option<TaskId>) -> Result<Self, UserReturnTransferError> {
         if current_task == Some(self.task) { return Err(UserReturnTransferError::CurrentTask); }
+        if self.kernel_stack_top == 0 { return Err(UserReturnTransferError::InvalidKernelStack); }
 
         if let Some(state) = self.resume() {
             if !state.is_user_valid() {
@@ -69,6 +73,8 @@ mod tests {
     use crate::process::{AddressSpaceId, ProcessId, UserLaunchPlan};
     use crate::scheduler::TaskId;
 
+    const KERNEL_STACK_TOP: u64 = 0x80_000;
+
     fn transfer(task: TaskId, process: ProcessId) -> UserReturnTransfer {
         let id = AddressSpaceId::new(task.index().wrapping_add(1).max(1)).unwrap();
         let root = AddressSpaceRoot::from_physical_address(0x1234_5000).unwrap();
@@ -76,7 +82,7 @@ mod tests {
         let plan = UserLaunchPlan { address_space: id, entry: USER_SPACE_START + 0x1000, stack_pointer: stack.end() };
         let prepared = prepare_launch(root, plan).unwrap();
         let binding = crate::arch::x86_64::user_execution::UserExecutionBinding::new(process, task, id, prepared).unwrap();
-        UserReturnTransfer::new(binding)
+        UserReturnTransfer::new(binding, KERNEL_STACK_TOP)
     }
 
     fn user_state(rip: u64, rax: u64) -> InterruptedState {
@@ -100,11 +106,19 @@ mod tests {
     }
 
     #[test]
+    fn transfer_rejects_missing_kernel_stack() {
+        let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
+        let invalid = UserReturnTransfer::new(transfer.binding(), 0);
+        assert_eq!(invalid.validate(None), Err(UserReturnTransferError::InvalidKernelStack));
+    }
+
+    #[test]
     fn transfer_accepts_valid_initial_frame() {
         let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
         assert_eq!(transfer.validate(None), Ok(transfer));
         assert_ne!(transfer.frame().rip, 0);
         assert_ne!(transfer.frame().rsp, 0);
+        assert_eq!(transfer.kernel_stack_top(), KERNEL_STACK_TOP);
     }
 
     #[test]
@@ -112,7 +126,7 @@ mod tests {
         let transfer = transfer(TaskId::new(3, 4), ProcessId::new(1, 2));
         let mut binding = transfer.binding();
         binding.install_resume(user_state(USER_SPACE_START + 0x5000, 7)).unwrap();
-        let transfer = UserReturnTransfer::new(binding);
+        let transfer = UserReturnTransfer::new(binding, transfer.kernel_stack_top());
         assert_eq!(transfer.validate(None), Ok(transfer));
         assert_eq!(transfer.resume().unwrap().registers().rax, 7);
     }
@@ -125,18 +139,16 @@ mod tests {
         let mut a_binding = a.binding();
         let a_state = user_state(USER_SPACE_START + 0x7000, 0xA5);
         a_binding.install_resume(a_state).unwrap();
-        let a_resume = UserReturnTransfer::new(a_binding);
+        let a_resume = UserReturnTransfer::new(a_binding, a.kernel_stack_top());
 
         // A -> B: successor B has never run, so it must use its initial launch frame.
         let b_transfer = b;
         assert!(b_transfer.resume().is_none());
-        assert_eq!(b_transfer.validate(Some(a_transfer_task(a_resume))).is_ok(), true);
+        assert_eq!(b_transfer.validate(Some(a_resume.task())).is_ok(), true);
 
         // B -> A: A must return through its saved snapshot, not its original entry point.
         assert_eq!(a_resume.resume().unwrap().return_state().rip(), USER_SPACE_START + 0x7000);
         assert_eq!(a_resume.resume().unwrap().registers().rax, 0xA5);
         assert!(a_resume.validate(Some(b_transfer.task())).is_ok());
     }
-
-    const fn a_transfer_task(transfer: UserReturnTransfer) -> TaskId { transfer.task() }
 }

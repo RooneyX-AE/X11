@@ -3,7 +3,9 @@
 //! The raw interrupt stack frame is temporary. This type copies the CPU state
 //! into task-owned memory before the interrupt stack can be reclaimed.
 
+use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+use crate::memory::{user_stack_range, KERNEL_SPACE_START, USER_SPACE_START};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,12 +74,26 @@ impl InterruptedState {
                 || (self.return_state.rsp().is_some() && self.return_state.ss().is_some()))
     }
 
-    pub const fn is_user_valid(self) -> bool {
-        if !self.is_valid() || !self.return_state.is_user() || self.return_state.rsp().is_none() {
+    pub fn is_user_valid(self) -> bool {
+        if !self.is_valid() || !self.return_state.is_user() { return false; }
+        if self.return_state.cs() != USER_CODE_SELECTOR as u64
+            || self.return_state.ss() != Some(USER_DATA_SELECTOR as u64)
+        {
             return false;
         }
-        let Some(ss) = self.return_state.ss() else { return false; };
-        self.return_state.cs() & 3 == 3 && ss & 3 == 3
+        let rflags = self.return_state.rflags();
+        // A CPL3 return must keep interrupts enabled and must not request
+        // privileged task-switch/I/O privilege semantics. DF/AC/ID remain
+        // caller-owned user flags and are intentionally preserved.
+        if rflags & (1 << 9) == 0 || rflags & (0b11 << 12) != 0 || rflags & (1 << 14) != 0 {
+            return false;
+        }
+        let Some(rsp) = self.return_state.rsp() else { return false; };
+        let Some(stack) = user_stack_range() else { return false; };
+        self.return_state.rip() >= USER_SPACE_START
+            && self.return_state.rip() < KERNEL_SPACE_START
+            && rsp >= stack.start()
+            && rsp <= stack.end()
     }
 }
 
@@ -99,7 +115,9 @@ const _: () = assert!(core::mem::align_of::<InterruptedState>() == 8);
 #[cfg(test)]
 mod tests {
     use super::{InterruptedState, ReturnState};
+    use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+    use crate::memory::{user_stack_range, USER_SPACE_START};
 
     #[test]
     fn kernel_return_snapshot_is_valid() {
@@ -117,12 +135,67 @@ mod tests {
     }
 
     #[test]
-    fn user_return_snapshot_is_valid_only_with_user_stack_pair() {
-        let state = ReturnState { rip: 0x1000, cs: 0x1b, rflags: 0x202, resume_rsp: 0x8000, rsp: Some(0x8000), ss: Some(0x23) };
+    fn user_return_snapshot_accepts_runtime_stack_alignment() {
+        let stack = user_stack_range().unwrap();
+        let state = ReturnState {
+            rip: USER_SPACE_START + 0x1000,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(stack.end() - 8),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
         let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
-        assert!(!state.is_kernel());
         assert!(interrupted.is_valid());
         assert!(interrupted.is_user_valid());
-        assert!(state.kernel_iret_words().is_none());
+    }
+
+    #[test]
+    fn user_return_snapshot_rejects_privileged_rflags() {
+        let stack = user_stack_range().unwrap();
+        let valid = ReturnState {
+            rip: USER_SPACE_START + 0x1000,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(stack.end()),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        for flags in [valid.rflags | (1 << 12), valid.rflags | (1 << 13), valid.rflags | (1 << 14), valid.rflags & !(1 << 9)] {
+            let interrupted = InterruptedState {
+                registers: SavedRegisters::default(),
+                return_state: ReturnState { rflags: flags, ..valid },
+            };
+            assert!(!interrupted.is_user_valid());
+        }
+    }
+
+    #[test]
+    fn user_return_snapshot_rejects_user_selector_with_invalid_rip() {
+        let stack = user_stack_range().unwrap();
+        let state = ReturnState {
+            rip: 0,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(stack.end()),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
+        assert!(!interrupted.is_user_valid());
+    }
+
+    #[test]
+    fn user_return_snapshot_rejects_user_stack_outside_policy() {
+        let state = ReturnState {
+            rip: USER_SPACE_START + 0x1000,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(USER_SPACE_START + 0x1000),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
+        assert!(!interrupted.is_user_valid());
     }
 }

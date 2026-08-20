@@ -127,7 +127,7 @@ impl SystemRuntime {
         self.current_process = Some(process);
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(task)); }
         let launch = user_binding.launch();
-        unsafe { crate::arch::x86_64::user_activation::activate_and_enter_user(launch) };
+        unsafe { crate::arch::x86_64::user_activation::activate_and_enter_user(launch, stack_top) };
     }
 
     pub fn current_process(&self) -> Option<ProcessId> { self.current_process }
@@ -140,9 +140,9 @@ impl SystemRuntime {
         let successor = select_userspace_successor(self, Some(task)).map_err(SystemRuntimeError::Successor)?;
         let current_binding = self.processes.binding(process).map_err(SystemRuntimeError::Process)?.ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         if current_binding.task() != task || self.processes.state(process).map_err(SystemRuntimeError::Process)? != ProcessState::Running { return Err(SystemRuntimeError::TaskBindingMismatch); }
-        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(task)).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         let current_execution = self.runtime.manager().scheduler.execution(task).ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task()).ok_or(SystemRuntimeError::KernelStackUnavailable)?;
+        let transfer = UserReturnTransfer::new(successor.binding(), successor_stack_top).validate(Some(task)).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         self.processes.start(successor.process()).map_err(SystemRuntimeError::Process)?;
         self.processes.exit(process).map_err(SystemRuntimeError::Process)?;
         self.runtime.manager_mut().scheduler.terminate_current_to(successor.task()).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
@@ -164,8 +164,8 @@ impl SystemRuntime {
         let current_binding = self.processes.binding(current_process).map_err(SystemRuntimeError::Process)?.ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         if current_binding.task() != current_task || self.processes.state(current_process).map_err(SystemRuntimeError::Process)? != ProcessState::Running { return Err(SystemRuntimeError::TaskBindingMismatch); }
         let successor = match select_userspace_successor(self, Some(current_task)) { Ok(successor) => successor, Err(UserSuccessorError::NoReadyTask) => return Ok(None), Err(error) => return Err(SystemRuntimeError::Successor(error)) };
-        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task)).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task()).ok_or(SystemRuntimeError::KernelStackUnavailable)?;
+        let transfer = UserReturnTransfer::new(successor.binding(), successor_stack_top).validate(Some(current_task)).map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         if let Some((captured_task, state)) = interrupted {
             if captured_task != current_task || !state.is_user_valid() { return Err(SystemRuntimeError::TaskBindingMismatch); }
             self.userspace.install_resume(current_task, state).map_err(SystemRuntimeError::UserBinding)?;

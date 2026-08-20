@@ -63,18 +63,37 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+          firmware_code="$(find /usr/share/OVMF -maxdepth 1 -type f -name 'OVMF_CODE*.fd' -readable | head -n 1)"
+          firmware_vars_template="$(find /usr/share/OVMF -maxdepth 1 -type f -name 'OVMF_VARS*.fd' -readable | head -n 1)"
+          test -n "$firmware_code"
+          test -n "$firmware_vars_template"
+          test -s "$firmware_code"
+          test -s "$firmware_vars_template"
+          file "$firmware_code"
+          file "$firmware_vars_template"
+          ls -l "$firmware_code" "$firmware_vars_template"
+          cp "$firmware_code" "$GITHUB_WORKSPACE/OVMF_CODE.fd"
+          cp "$firmware_vars_template" "$GITHUB_WORKSPACE/OVMF_VARS.fd"
+          chmod 0644 "$GITHUB_WORKSPACE/OVMF_CODE.fd" "$GITHUB_WORKSPACE/OVMF_VARS.fd"
+          test -s "$GITHUB_WORKSPACE/OVMF_CODE.fd"
+          test -s "$GITHUB_WORKSPACE/OVMF_VARS.fd"
       - name: Boot kernel and verify userspace ring3 syscall path
         shell: bash
         run: |
           set -o pipefail
           image="$(cargo run -q -p x11-os-boot | sed -n 's/^X11-OS UEFI image: //p')"
           test -n "$image"
-          firmware="$(find /usr/share/OVMF -maxdepth 1 -type f -name 'OVMF_CODE*.fd' | head -n 1)"
-          test -n "$firmware"
+          firmware_code="$GITHUB_WORKSPACE/OVMF_CODE.fd"
+          firmware_vars="$GITHUB_WORKSPACE/OVMF_VARS.fd"
+          test -r "$firmware_code"
+          test -s "$firmware_code"
+          test -r "$firmware_vars"
+          test -s "$firmware_vars"
           set +e
           timeout 12s qemu-system-x86_64 \
             -no-reboot \
-            -bios "$firmware" \
+            -drive "if=pflash,format=raw,readonly=on,file=$firmware_code" \
+            -drive "if=pflash,format=raw,file=$firmware_vars" \
             -drive "format=raw,file=$image" \
             -serial stdio \
             -display none \

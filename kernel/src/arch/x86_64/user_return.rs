@@ -6,6 +6,8 @@
 
 use crate::process::InitialContext;
 
+use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UserReturnFrame {
@@ -19,6 +21,7 @@ pub struct UserReturnFrame {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserReturnError {
     KernelSelector,
+    InvalidSelectors,
     InvalidRflags,
 }
 
@@ -30,6 +33,9 @@ impl UserReturnFrame {
     ) -> Result<Self, UserReturnError> {
         if user_code & 3 != 3 || user_data & 3 != 3 {
             return Err(UserReturnError::KernelSelector);
+        }
+        if user_code != USER_CODE_SELECTOR || user_data != USER_DATA_SELECTOR {
+            return Err(UserReturnError::InvalidSelectors);
         }
 
         let rflags = 0x202u64;
@@ -83,6 +89,16 @@ mod tests {
         assert_eq!(
             UserReturnFrame::from_initial(context, 0x08, 0x10),
             Err(UserReturnError::KernelSelector)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_ring3_selectors() {
+        let stack = user_stack_range().unwrap();
+        let context = InitialContext::new(USER_SPACE_START + 0x1000, stack.end()).unwrap();
+        assert_eq!(
+            UserReturnFrame::from_initial(context, USER_CODE_SELECTOR + 0x08, USER_DATA_SELECTOR + 0x08),
+            Err(UserReturnError::InvalidSelectors)
         );
     }
 }
