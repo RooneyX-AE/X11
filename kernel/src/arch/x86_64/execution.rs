@@ -57,6 +57,9 @@ impl X86ExecutionBinding {
     pub fn context_mut(&mut self) -> &mut Context { &mut self.context }
     pub const fn activation(&self) -> &ActivationRecord { &self.activation }
     pub fn stack_size(&self) -> usize { self.stack.len() }
+    pub fn stack_top(&self) -> Option<u64> {
+        self.stack.as_ptr().addr().checked_add(self.stack.len()).map(|value| value as u64)
+    }
     pub const fn interrupted(&self) -> Option<InterruptedState> { self.interrupted }
 
     /// Copies the interrupted CPU state out of the transient IRQ stack.
@@ -108,6 +111,7 @@ impl ExecutionBinding for X86ExecutionBinding {
             || self.activation.task_id() != self.task_id
             || self.context.r12 != self.activation.pointer()
             || self.interrupted.is_some_and(|state| !state.is_valid())
+            || self.stack_top().is_none()
         {
             return Err(ExecutionError::InvalidStack);
         }
@@ -138,6 +142,7 @@ mod tests {
     fn execution_binding_owns_stable_stack_and_activation() {
         let binding = X86ExecutionBinding::new(TaskId::new(1, 1), never_returns).unwrap();
         assert_eq!(binding.stack_size(), KERNEL_STACK_SIZE);
+        assert!(binding.stack_top().is_some());
         assert_eq!(binding.activation().task_id(), TaskId::new(1, 1));
         assert_eq!(binding.context().r12, binding.activation().pointer());
         assert!(binding.is_bootstrapped());
