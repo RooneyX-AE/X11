@@ -6,6 +6,7 @@ use crate::process::{ProcessId, ProcessImage, ProcessManager, ProcessState};
 use crate::scheduler::{Priority, TaskId, TaskState};
 use crate::syscall::{ProcessSyscallControl, SyscallError};
 
+use super::interrupted_state::InterruptedState;
 use super::kernel_task::KernelTaskError;
 use super::runtime::{KernelRuntime, RuntimeError};
 use super::user_execution::{UserExecutionBinding, UserExecutionRegistry, UserExecutionRegistryError};
@@ -13,14 +14,7 @@ use super::user_launch::PreparedUserLaunch;
 use super::user_successor::{select_userspace_successor, UserSuccessorError};
 use super::user_return_transfer::UserReturnTransfer;
 
-/// Placeholder kernel continuation for userspace execution bindings.
-///
-/// Userspace tasks enter through an `iretq` frame rather than this continuation,
-/// but the architecture execution registry still owns their kernel stack so a
-/// CPL3 interrupt/syscall has a task-specific RSP0 target.
-extern "C" fn userspace_kernel_stub() -> ! {
-    loop {}
-}
+extern "C" fn userspace_kernel_stub() -> ! { loop {} }
 
 #[derive(Debug)]
 pub struct SystemRuntime {
@@ -102,9 +96,7 @@ impl SystemRuntime {
 
         if let Err(error) = self.runtime.manager_mut().executions.insert(execution, userspace_kernel_stub) {
             let _ = self.runtime.manager_mut().scheduler.destroy_created(task);
-            return Err(SystemRuntimeError::Runtime(RuntimeError::Task(
-                KernelTaskError::Registry(error),
-            )));
+            return Err(SystemRuntimeError::Runtime(RuntimeError::Task(KernelTaskError::Registry(error))));
         }
 
         let spawned = match self.processes.spawn_ready(image, task, execution, address_space) {
@@ -147,33 +139,35 @@ impl SystemRuntime {
     pub unsafe fn start_user(&mut self, process: ProcessId) -> Result<(), SystemRuntimeError> {
         let binding = self.processes.binding(process).map_err(SystemRuntimeError::Process)?
             .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
-        let user_binding = self.userspace.get(binding.task()).ok_or(SystemRuntimeError::TaskBindingMismatch)?;
+        let task = binding.task();
+        let user_binding = self.userspace.get(task).ok_or(SystemRuntimeError::TaskBindingMismatch)?;
         if user_binding.process() != process || user_binding.address_space() != binding.address_space() {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
         if self.processes.state(process).map_err(SystemRuntimeError::Process)? != ProcessState::Ready {
             return Err(SystemRuntimeError::Process(crate::process::ProcessManagerError::InvalidTransition));
         }
-        let stack_top = self.runtime.manager().executions.kernel_stack_top(binding.task())
+        let stack_top = self.runtime.manager().executions.kernel_stack_top(task)
             .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
-
-        let scheduler = &mut self.runtime.manager_mut().scheduler;
-        if scheduler.state(binding.task()) != Some(TaskState::Ready) || scheduler.next_ready() != Some(binding.task()) {
-            return Err(SystemRuntimeError::SchedulerTaskNotReady);
+        {
+            let scheduler = &mut self.runtime.manager_mut().scheduler;
+            if scheduler.state(task) != Some(TaskState::Ready) || scheduler.next_ready() != Some(task) {
+                return Err(SystemRuntimeError::SchedulerTaskNotReady);
+            }
         }
 
         self.pending_exit = None;
         self.processes.start(process).map_err(SystemRuntimeError::Process)?;
-        let decision = scheduler.schedule_next();
-        if decision.next != Some(binding.task()) || scheduler.current() != Some(binding.task()) {
+        let decision = self.runtime.manager_mut().scheduler.schedule_next();
+        if decision.next != Some(task) || self.runtime.manager().scheduler.current() != Some(task) {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
         unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(stack_top); }
-
         self.current_process = Some(process);
-        unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(binding.task())); }
-        unsafe { crate::arch::x86_64::user_activation::activate_and_enter_user(user_binding.launch()) };
+        unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(task)); }
+        let launch = user_binding.launch();
+        unsafe { crate::arch::x86_64::user_activation::activate_and_enter_user(launch) };
     }
 
     pub fn current_process(&self) -> Option<ProcessId> { self.current_process }
@@ -183,14 +177,11 @@ impl SystemRuntime {
         self.userspace.get(task)
     }
 
-    pub fn take_pending_exit(&mut self) -> Option<(ProcessId, TaskId, u64)> {
-        self.pending_exit.take()
-    }
+    pub fn take_pending_exit(&mut self) -> Option<(ProcessId, TaskId, u64)> { self.pending_exit.take() }
 
     pub fn commit_pending_exit(&mut self) -> Result<UserReturnTransfer, SystemRuntimeError> {
         let (process, task, _code) = self.pending_exit.ok_or(SystemRuntimeError::NoCurrentProcess)?;
-        let current_task = self.runtime.manager().scheduler.current();
-        if self.current_process != Some(process) || current_task != Some(task) {
+        if self.current_process != Some(process) || self.runtime.manager().scheduler.current() != Some(task) {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
@@ -214,24 +205,30 @@ impl SystemRuntime {
             .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         let _ = self.userspace.remove(task).map_err(SystemRuntimeError::UserBinding)?;
         let _ = self.runtime.manager_mut().executions.remove(current_execution);
+        if transfer.resume().is_some() {
+            self.userspace.clear_resume(successor.task()).expect("validated successor resume binding disappeared");
+        }
 
         unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(successor_stack_top); }
-
         self.current_process = Some(successor.process());
         self.pending_exit = None;
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
-
         Ok(transfer)
     }
 
     pub fn commit_userspace_yield(&mut self) -> Result<Option<UserReturnTransfer>, SystemRuntimeError> {
+        self.commit_userspace_yield_with_snapshot(None)
+    }
+
+    pub fn commit_userspace_yield_with_snapshot(
+        &mut self,
+        interrupted: Option<InterruptedState>,
+    ) -> Result<Option<UserReturnTransfer>, SystemRuntimeError> {
         let current_process = self.current_process.ok_or(SystemRuntimeError::NoCurrentProcess)?;
         let current_task = self.runtime.manager().scheduler.current().ok_or(SystemRuntimeError::NoCurrentProcess)?;
         let current_binding = self.processes.binding(current_process).map_err(SystemRuntimeError::Process)?
             .ok_or(SystemRuntimeError::TaskBindingMismatch)?;
-        if current_binding.task() != current_task
-            || self.processes.state(current_process).map_err(SystemRuntimeError::Process)? != ProcessState::Running
-        {
+        if current_binding.task() != current_task || self.processes.state(current_process).map_err(SystemRuntimeError::Process)? != ProcessState::Running {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
@@ -246,15 +243,21 @@ impl SystemRuntime {
         let successor_stack_top = self.runtime.manager().executions.kernel_stack_top(successor.task())
             .ok_or(SystemRuntimeError::KernelStackUnavailable)?;
 
-        self.processes.yield_to(current_process, successor.process())
-            .map_err(SystemRuntimeError::Process)?;
+        if let Some(state) = interrupted {
+            if !state.is_user_valid() { return Err(SystemRuntimeError::TaskBindingMismatch); }
+            self.userspace.install_resume(current_task, state).map_err(SystemRuntimeError::UserBinding)?;
+        }
+
+        self.processes.yield_to(current_process, successor.process()).map_err(SystemRuntimeError::Process)?;
         let decision = self.runtime.manager_mut().scheduler.schedule_next();
         if decision.next != Some(successor.task()) || self.runtime.manager().scheduler.current() != Some(successor.task()) {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
+        if transfer.resume().is_some() {
+            self.userspace.clear_resume(successor.task()).expect("validated successor resume binding disappeared");
+        }
         unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(successor_stack_top); }
-
         self.current_process = Some(successor.process());
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
         Ok(Some(transfer))
