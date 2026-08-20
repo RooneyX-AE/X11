@@ -87,11 +87,15 @@ impl ExecutionRegistry {
     }
 
     /// Consumes a previously interrupted kernel snapshot when the scheduler has
-    /// committed the task as the next CPU owner.
+    /// committed the task as the next CPU owner. Validation happens before the
+    /// destructive `take`, so a malformed/non-kernel snapshot cannot be lost.
     pub fn take_kernel_preempt_state(&mut self, task_id: TaskId) -> Option<InterruptedState> {
         let binding = self.get_mut(task_id)?;
-        let state = binding.take_interrupted()?;
-        state.return_state().kernel_iret_words().is_some().then_some(state)
+        let state = binding.interrupted()?;
+        if state.return_state().kernel_iret_words().is_none() {
+            return None;
+        }
+        binding.take_interrupted()
     }
 
     pub fn context_pair_mut(&mut self, current: TaskId, next: TaskId) -> Option<(&mut Context, &Context)> {
@@ -125,9 +129,21 @@ impl ExecutionRegistry {
 #[cfg(test)]
 mod tests {
     use super::{ExecutionRegistry, RegistryInsertError};
+    use crate::arch::x86_64::interrupted_state::InterruptedState;
+    use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::scheduler::{ExecutionHandle, TaskId};
 
     extern "C" fn never_returns() -> ! { loop {} }
+
+    fn kernel_snapshot() -> InterruptedState {
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000;
+        raw[1] = 0x10;
+        raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        unsafe { InterruptedState::capture(&registers, frame) }
+    }
 
     #[test]
     fn registry_owns_one_execution_binding_per_handle() {
@@ -186,5 +202,25 @@ mod tests {
         let handle = ExecutionHandle::for_task(TaskId::new(5, 1));
         registry.insert(handle, never_returns).unwrap();
         assert!(registry.context_pair_mut(handle.task_id(), handle.task_id()).is_none());
+    }
+
+    #[test]
+    fn non_kernel_preempt_state_is_not_consumed() {
+        let mut registry = ExecutionRegistry::new();
+        let handle = ExecutionHandle::for_task(TaskId::new(6, 1));
+        registry.insert(handle, never_returns).unwrap();
+        let binding = registry.get_mut(handle.task_id()).unwrap();
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 5];
+        raw[0] = 0x1000;
+        raw[1] = 0x1b;
+        raw[2] = 0x202;
+        raw[3] = 0x8000;
+        raw[4] = 0x23;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        let snapshot = unsafe { InterruptedState::capture(&registers, frame) };
+        binding.install_interrupted(snapshot).unwrap();
+        assert!(registry.take_kernel_preempt_state(handle.task_id()).is_none());
+        assert!(registry.get(handle.task_id()).unwrap().interrupted().is_some());
     }
 }
