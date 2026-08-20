@@ -1,6 +1,9 @@
 //! ELF segment population over already-mapped user pages.
 //!
 //! This layer turns immutable ELF bytes into page-local copy/zero operations.
+//! Every mapped userspace page is cleared before file bytes are copied so
+//! unused leading/trailing bytes and BSS are deterministic rather than exposing
+//! stale physical-frame contents.
 //! It deliberately does not perform raw physical-memory dereferences. An
 //! architecture backend supplies `ImagePageWriter`, keeping unsafe direct-map
 //! access out of the process loader.
@@ -55,16 +58,18 @@ pub fn populate_image<W: ImagePageWriter>(
             let mapped_index = find_mapped_page(loaded, page_base).ok_or(PopulateError::MissingMappedPage)?;
             let physical = loaded.page(mapped_index).ok_or(PopulateError::MissingMappedPage)?.physical_address;
 
+            // Early-boot frames are not guaranteed to be zeroed. Clear the
+            // entire mapped page before writing segment bytes so prefix/suffix
+            // padding and BSS cannot expose stale physical-frame contents.
+            writer.zero_page_range(physical, 0, PAGE_SIZE_4K as usize)
+                .map_err(|_| PopulateError::FileRangeInvalid)?;
+
             let file_chunk_start = offset.min(file_size) as usize;
             let file_remaining = file_bytes.len().saturating_sub(file_chunk_start);
             let copy_len = file_remaining.min(chunk);
             if copy_len != 0 {
                 let source_end = file_chunk_start.checked_add(copy_len).ok_or(PopulateError::FileRangeInvalid)?;
                 writer.copy_into_page(physical, page_offset, &file_bytes[file_chunk_start..source_end])
-                    .map_err(|_| PopulateError::FileRangeInvalid)?;
-            }
-            if copy_len < chunk {
-                writer.zero_page_range(physical, page_offset + copy_len, chunk - copy_len)
                     .map_err(|_| PopulateError::FileRangeInvalid)?;
             }
 
