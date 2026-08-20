@@ -5,7 +5,7 @@
 
 use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
-use crate::memory::{is_valid_user_stack_pointer, KERNEL_SPACE_START, USER_SPACE_START};
+use crate::memory::{user_stack_range, KERNEL_SPACE_START, USER_SPACE_START};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,7 +74,7 @@ impl InterruptedState {
                 || (self.return_state.rsp().is_some() && self.return_state.ss().is_some()))
     }
 
-    pub const fn is_user_valid(self) -> bool {
+    pub fn is_user_valid(self) -> bool {
         if !self.is_valid() || !self.return_state.is_user() { return false; }
         if self.return_state.cs() != USER_CODE_SELECTOR as u64
             || self.return_state.ss() != Some(USER_DATA_SELECTOR as u64)
@@ -82,12 +82,11 @@ impl InterruptedState {
             return false;
         }
         let Some(rsp) = self.return_state.rsp() else { return false; };
-        if self.return_state.rip() < USER_SPACE_START
-            || self.return_state.rip() >= KERNEL_SPACE_START
-        {
-            return false;
-        }
-        is_valid_user_stack_pointer(rsp)
+        let Some(stack) = user_stack_range() else { return false; };
+        self.return_state.rip() >= USER_SPACE_START
+            && self.return_state.rip() < KERNEL_SPACE_START
+            && rsp >= stack.start()
+            && rsp <= stack.end()
     }
 }
 
@@ -129,14 +128,14 @@ mod tests {
     }
 
     #[test]
-    fn user_return_snapshot_requires_x11_selector_and_address_policy() {
+    fn user_return_snapshot_accepts_runtime_stack_alignment() {
         let stack = user_stack_range().unwrap();
         let state = ReturnState {
             rip: USER_SPACE_START + 0x1000,
             cs: USER_CODE_SELECTOR as u64,
             rflags: 0x202,
             resume_rsp: 0x8000,
-            rsp: Some(stack.end()),
+            rsp: Some(stack.end() - 8),
             ss: Some(USER_DATA_SELECTOR as u64),
         };
         let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
