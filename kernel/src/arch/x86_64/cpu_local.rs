@@ -127,6 +127,10 @@ impl CpuLocalState {
         Ok(task)
     }
 
+    pub fn interrupted_task(&self) -> Option<TaskId> {
+        unsafe { (*self.interrupted.get()).as_ref().map(|(task, _)| *task) }
+    }
+
     pub fn take_interrupted(&self) -> Option<(TaskId, InterruptedState)> {
         unsafe { (*self.interrupted.get()).take() }
     }
@@ -216,5 +220,22 @@ mod tests {
             unsafe { cpu.capture_interrupted(&registers, frame, 0x8000) },
             Err(CaptureError::NoCurrentTask)
         );
+    }
+
+    #[test]
+    fn interrupted_task_is_visible_without_consuming_snapshot() {
+        let cpu = CpuLocalState::new();
+        unsafe { cpu.set_current_task(Some(TaskId::new(9, 4))) };
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 3];
+        raw[0] = 0x1000;
+        raw[1] = 0x10;
+        raw[2] = 0x202;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        unsafe { cpu.capture_interrupted(&registers, frame, 0x8000).unwrap() };
+        assert_eq!(cpu.interrupted_task(), Some(TaskId::new(9, 4)));
+        assert!(cpu.has_interrupted());
+        assert_eq!(cpu.take_interrupted().unwrap().0, TaskId::new(9, 4));
+        assert_eq!(cpu.interrupted_task(), None);
     }
 }
