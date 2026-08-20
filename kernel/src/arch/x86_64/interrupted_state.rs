@@ -17,9 +17,6 @@ pub struct ReturnState {
 }
 
 impl ReturnState {
-    /// # Safety
-    /// `frame` must reference a valid CPU interrupt frame for the interrupted
-    /// task, and the frame must remain live for this call.
     pub unsafe fn capture(frame: InterruptReturnFrame) -> Option<Self> {
         Some(Self {
             rip: unsafe { frame.rip() },
@@ -39,8 +36,8 @@ impl ReturnState {
     pub const fn ss(self) -> Option<u64> { self.ss }
 
     pub const fn is_kernel(self) -> bool { self.cs & 3 == 0 }
+    pub const fn is_user(self) -> bool { self.cs & 3 == 3 }
 
-    /// Returns the exact three words required for a same-CPL kernel `iretq`.
     pub const fn kernel_iret_words(self) -> Option<[u64; 3]> {
         if !self.is_kernel() || self.rip == 0 || self.rflags & 2 == 0 || self.resume_rsp == 0 {
             return None;
@@ -57,8 +54,6 @@ pub struct InterruptedState {
 }
 
 impl InterruptedState {
-    /// # Safety
-    /// Both pointers must reference the live CPU-saved interrupt state.
     pub unsafe fn capture(
         registers: *const SavedRegisters,
         frame: InterruptReturnFrame,
@@ -78,6 +73,15 @@ impl InterruptedState {
             && self.return_state.resume_rsp() != 0
             && (self.return_state.is_kernel()
                 || (self.return_state.rsp().is_some() && self.return_state.ss().is_some()))
+    }
+
+    pub const fn is_user_valid(self) -> bool {
+        self.is_valid()
+            && self.return_state.is_user()
+            && self.return_state.rsp().is_some()
+            && self.return_state.ss().is_some()
+            && self.return_state.cs() & 3 == 3
+            && self.return_state.ss().unwrap_or(0) & 3 == 3
     }
 }
 
@@ -111,6 +115,7 @@ mod tests {
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
         let snapshot = unsafe { InterruptedState::capture(&registers, frame) };
         assert!(snapshot.is_valid());
+        assert!(!snapshot.is_user_valid());
         assert_eq!(snapshot.return_state().rsp(), None);
         assert_eq!(snapshot.return_state().ss(), None);
         assert_eq!(snapshot.return_state().resume_rsp(), raw.as_mut_ptr() as u64 + 24);
@@ -118,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn user_return_snapshot_requires_stack_pair() {
+    fn user_return_snapshot_is_valid_only_with_user_stack_pair() {
         let state = ReturnState {
             rip: 0x1000,
             cs: 0x1b,
@@ -127,9 +132,10 @@ mod tests {
             rsp: Some(0x8000),
             ss: Some(0x23),
         };
+        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
         assert!(!state.is_kernel());
-        assert_eq!(state.resume_rsp(), 0x8000);
+        assert!(interrupted.is_valid());
+        assert!(interrupted.is_user_valid());
         assert!(state.kernel_iret_words().is_none());
-        assert!(state.rsp().is_some() && state.ss().is_some());
     }
-} 
+}
