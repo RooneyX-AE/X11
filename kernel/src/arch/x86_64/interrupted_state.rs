@@ -81,6 +81,13 @@ impl InterruptedState {
         {
             return false;
         }
+        let rflags = self.return_state.rflags();
+        // A CPL3 return must keep interrupts enabled and must not request
+        // privileged task-switch/I/O privilege semantics. DF/AC/ID remain
+        // caller-owned user flags and are intentionally preserved.
+        if rflags & (1 << 9) == 0 || rflags & (0b11 << 12) != 0 || rflags & (1 << 14) != 0 {
+            return false;
+        }
         let Some(rsp) = self.return_state.rsp() else { return false; };
         let Some(stack) = user_stack_range() else { return false; };
         self.return_state.rip() >= USER_SPACE_START
@@ -141,6 +148,26 @@ mod tests {
         let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
         assert!(interrupted.is_valid());
         assert!(interrupted.is_user_valid());
+    }
+
+    #[test]
+    fn user_return_snapshot_rejects_privileged_rflags() {
+        let stack = user_stack_range().unwrap();
+        let valid = ReturnState {
+            rip: USER_SPACE_START + 0x1000,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(stack.end()),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        for flags in [valid.rflags | (1 << 12), valid.rflags | (1 << 13), valid.rflags | (1 << 14), valid.rflags & !(1 << 9)] {
+            let interrupted = InterruptedState {
+                registers: SavedRegisters::default(),
+                return_state: ReturnState { rflags: flags, ..valid },
+            };
+            assert!(!interrupted.is_user_valid());
+        }
     }
 
     #[test]
