@@ -55,8 +55,10 @@ impl Scheduler {
     }
 
     fn create_task_with_kind(&mut self, priority: Priority, kind: TaskKind) -> TaskId {
-        if let Some((index, slot)) = self.tasks.iter_mut().enumerate().find(|(_, slot)| slot.is_none()) {
-            let generation = self.generations[index].wrapping_add(1).max(1);
+        if let Some((index, slot)) = self.tasks.iter_mut().enumerate().find(|(index, slot)| {
+            slot.is_none() && self.generations[*index] != u32::MAX
+        }) {
+            let generation = self.generations[index].checked_add(1).expect("retired generation slot");
             self.generations[index] = generation;
             let id = TaskId::new(index as u32, generation);
             *slot = Some(Box::new(match kind {
@@ -367,5 +369,19 @@ mod tests {
         assert_eq!(scheduler.current(), Some(current));
         assert_eq!(scheduler.state(current), Some(TaskState::Running));
         assert_eq!(scheduler.state(successor), Some(TaskState::Ready));
+    }
+
+    #[test]
+    fn retired_generation_slot_is_never_reused() {
+        let mut scheduler = Scheduler::new();
+        let first = scheduler.create_task(Priority::DEFAULT);
+        let index = first.index() as usize;
+        scheduler.tasks[index] = None;
+        scheduler.generations[index] = u32::MAX;
+
+        let replacement = scheduler.create_task(Priority::DEFAULT);
+        assert_ne!(replacement.index(), first.index());
+        assert_eq!(replacement.generation(), 1);
+        assert_eq!(scheduler.generations[index], u32::MAX);
     }
 }
