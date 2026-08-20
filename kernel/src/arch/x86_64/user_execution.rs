@@ -2,13 +2,17 @@
 //!
 //! Userspace execution is intentionally not represented by the kernel
 //! `Context` used by voluntary kernel switches. A ring3 launch owns an
-//! `iretq` return frame and an address-space identity instead.
+//! `iretq` return frame and an address-space identity instead. Once a task has
+//! actually run, its interrupted user CPU state becomes task-owned resume
+//! state so a scheduler switch can continue it instead of restarting its ELF
+//! entry point.
 
 use alloc::vec::Vec;
 
 use crate::process::{AddressSpaceId, ProcessId};
 use crate::scheduler::TaskId;
 
+use super::interrupted_state::InterruptedState;
 use super::user_launch::PreparedUserLaunch;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,11 +21,14 @@ pub struct UserExecutionBinding {
     task: TaskId,
     address_space: AddressSpaceId,
     launch: PreparedUserLaunch,
+    resume: Option<InterruptedState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserExecutionBindingError {
     AddressSpaceMismatch,
+    ResumeStateAlreadyPresent,
+    InvalidResumeState,
 }
 
 impl UserExecutionBinding {
@@ -34,13 +41,29 @@ impl UserExecutionBinding {
         if launch.address_space() != address_space {
             return Err(UserExecutionBindingError::AddressSpaceMismatch);
         }
-        Ok(Self { process, task, address_space, launch })
+        Ok(Self { process, task, address_space, launch, resume: None })
     }
 
     pub const fn process(self) -> ProcessId { self.process }
     pub const fn task(self) -> TaskId { self.task }
     pub const fn address_space(self) -> AddressSpaceId { self.address_space }
     pub const fn launch(self) -> PreparedUserLaunch { self.launch }
+    pub const fn resume(self) -> Option<InterruptedState> { self.resume }
+
+    pub fn install_resume(&mut self, state: InterruptedState) -> Result<(), UserExecutionBindingError> {
+        if self.resume.is_some() {
+            return Err(UserExecutionBindingError::ResumeStateAlreadyPresent);
+        }
+        if !state.is_user_valid() {
+            return Err(UserExecutionBindingError::InvalidResumeState);
+        }
+        self.resume = Some(state);
+        Ok(())
+    }
+
+    pub fn clear_resume(&mut self) -> Option<InterruptedState> {
+        self.resume.take()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +75,7 @@ pub struct UserExecutionRegistry {
 pub enum UserExecutionRegistryError {
     AlreadyBound,
     NotFound,
+    Binding(UserExecutionBindingError),
 }
 
 impl UserExecutionRegistry {
@@ -73,6 +97,20 @@ impl UserExecutionRegistry {
         self.entries.iter().flatten().copied().find(|binding| binding.task() == task)
     }
 
+    pub fn install_resume(&mut self, task: TaskId, state: InterruptedState) -> Result<(), UserExecutionRegistryError> {
+        let binding = self.get_mut(task).ok_or(UserExecutionRegistryError::NotFound)?;
+        binding.install_resume(state).map_err(UserExecutionRegistryError::Binding)
+    }
+
+    pub fn clear_resume(&mut self, task: TaskId) -> Result<Option<InterruptedState>, UserExecutionRegistryError> {
+        let binding = self.get_mut(task).ok_or(UserExecutionRegistryError::NotFound)?;
+        Ok(binding.clear_resume())
+    }
+
+    pub fn get_mut(&mut self, task: TaskId) -> Option<&mut UserExecutionBinding> {
+        self.entries.iter_mut().filter_map(Option::as_deref_mut).find(|binding| binding.task() == task)
+    }
+
     pub fn count(&self) -> usize { self.entries.iter().filter(|entry| entry.is_some()).count() }
 }
 
@@ -80,6 +118,8 @@ impl UserExecutionRegistry {
 mod tests {
     use super::{UserExecutionBinding, UserExecutionBindingError, UserExecutionRegistry, UserExecutionRegistryError};
     use crate::arch::x86_64::address_space::AddressSpaceRoot;
+    use crate::arch::x86_64::interrupted_state::InterruptedState;
+    use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::arch::x86_64::user_launch::prepare_launch;
     use crate::memory::{user_stack_range, USER_SPACE_START};
     use crate::process::{AddressSpaceId, ProcessId, UserLaunchPlan};
@@ -96,6 +136,18 @@ mod tests {
     fn binding() -> UserExecutionBinding {
         let (id, launch) = launch();
         UserExecutionBinding::new(ProcessId::new(1, 2), TaskId::new(3, 4), id, launch).unwrap()
+    }
+
+    fn user_snapshot() -> InterruptedState {
+        let registers = SavedRegisters::default();
+        let mut raw = [0u64; 5];
+        raw[0] = USER_SPACE_START + 0x2000;
+        raw[1] = 0x1b;
+        raw[2] = 0x202;
+        raw[3] = user_stack_range().unwrap().end();
+        raw[4] = 0x13;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        unsafe { InterruptedState::capture(&registers, frame) }
     }
 
     #[test]
@@ -120,5 +172,17 @@ mod tests {
         registry.insert(value).unwrap();
         assert_eq!(registry.remove(value.task()), Ok(value));
         assert_eq!(registry.remove(value.task()), Err(UserExecutionRegistryError::NotFound));
+    }
+
+    #[test]
+    fn resume_state_is_owned_and_consumed_explicitly() {
+        let mut registry = UserExecutionRegistry::new();
+        let value = binding();
+        registry.insert(value).unwrap();
+        let state = user_snapshot();
+        registry.install_resume(value.task(), state).unwrap();
+        assert_eq!(registry.get(value.task()).unwrap().resume(), Some(state));
+        assert_eq!(registry.clear_resume(value.task()).unwrap(), Some(state));
+        assert!(registry.get(value.task()).unwrap().resume().is_none());
     }
 }
