@@ -102,10 +102,19 @@ impl KernelRuntime {
             return Err(RuntimeError::InterruptedState(ExecutionError::InterruptedStateAlreadyPresent));
         }
 
-        let Some((captured_task, snapshot)) = cpu_local::local().take_interrupted() else {
+        let Some(captured_task) = cpu_local::local().interrupted_task() else {
             return Ok(());
         };
-        debug_assert_eq!(captured_task, task_id);
+        if captured_task != task_id {
+            return Err(RuntimeError::MissingExecutionPair);
+        }
+
+        let Some((captured_task, snapshot)) = cpu_local::local().take_interrupted() else {
+            return Err(RuntimeError::MissingExecutionPair);
+        };
+        if captured_task != task_id {
+            return Err(RuntimeError::MissingExecutionPair);
+        }
 
         binding.install_interrupted(snapshot).map_err(RuntimeError::InterruptedState)
     }
