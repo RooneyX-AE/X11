@@ -5,6 +5,7 @@
 
 use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+use crate::memory::{is_valid_user_stack_pointer, KERNEL_SPACE_START, USER_SPACE_START};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,12 +75,19 @@ impl InterruptedState {
     }
 
     pub const fn is_user_valid(self) -> bool {
-        if !self.is_valid() || !self.return_state.is_user() || self.return_state.rsp().is_none() {
+        if !self.is_valid() || !self.return_state.is_user() { return false; }
+        if self.return_state.cs() != USER_CODE_SELECTOR as u64
+            || self.return_state.ss() != Some(USER_DATA_SELECTOR as u64)
+        {
             return false;
         }
-        let Some(ss) = self.return_state.ss() else { return false; };
-        self.return_state.cs() == USER_CODE_SELECTOR as u64
-            && ss == USER_DATA_SELECTOR as u64
+        let Some(rsp) = self.return_state.rsp() else { return false; };
+        if self.return_state.rip() < USER_SPACE_START
+            || self.return_state.rip() >= KERNEL_SPACE_START
+        {
+            return false;
+        }
+        is_valid_user_stack_pointer(rsp)
     }
 }
 
@@ -103,6 +111,7 @@ mod tests {
     use super::{InterruptedState, ReturnState};
     use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
+    use crate::memory::{user_stack_range, USER_SPACE_START};
 
     #[test]
     fn kernel_return_snapshot_is_valid() {
@@ -120,15 +129,47 @@ mod tests {
     }
 
     #[test]
-    fn user_return_snapshot_requires_exact_gdt_selectors() {
-        let valid_state = ReturnState { rip: 0x1000, cs: USER_CODE_SELECTOR as u64, rflags: 0x202, resume_rsp: 0x8000, rsp: Some(0x8000), ss: Some(USER_DATA_SELECTOR as u64) };
-        let valid = InterruptedState { registers: SavedRegisters::default(), return_state: valid_state };
-        assert!(valid.is_user_valid());
+    fn user_return_snapshot_requires_x11_selector_and_address_policy() {
+        let stack = user_stack_range().unwrap();
+        let state = ReturnState {
+            rip: USER_SPACE_START + 0x1000,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(stack.end()),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
+        assert!(interrupted.is_valid());
+        assert!(interrupted.is_user_valid());
+    }
 
-        let wrong_cs = InterruptedState { registers: SavedRegisters::default(), return_state: ReturnState { cs: USER_CODE_SELECTOR as u64 + 0x08, ..valid_state } };
-        assert!(!wrong_cs.is_user_valid());
+    #[test]
+    fn user_return_snapshot_rejects_user_selector_with_invalid_rip() {
+        let stack = user_stack_range().unwrap();
+        let state = ReturnState {
+            rip: 0,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(stack.end()),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
+        assert!(!interrupted.is_user_valid());
+    }
 
-        let wrong_ss = InterruptedState { registers: SavedRegisters::default(), return_state: ReturnState { ss: Some(USER_DATA_SELECTOR as u64 + 0x08), ..valid_state } };
-        assert!(!wrong_ss.is_user_valid());
+    #[test]
+    fn user_return_snapshot_rejects_user_stack_outside_policy() {
+        let state = ReturnState {
+            rip: USER_SPACE_START + 0x1000,
+            cs: USER_CODE_SELECTOR as u64,
+            rflags: 0x202,
+            resume_rsp: 0x8000,
+            rsp: Some(USER_SPACE_START + 0x1000),
+            ss: Some(USER_DATA_SELECTOR as u64),
+        };
+        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
+        assert!(!interrupted.is_user_valid());
     }
 }
