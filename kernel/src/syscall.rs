@@ -144,7 +144,13 @@ where
 {
     match request.syscall() {
         None => SyscallDispatch::returned(Err(SyscallError::UnknownNumber)),
-        Some(Syscall::Write) => SyscallDispatch::returned(sys_write_with_memory(request.user_slice(), mapper, backend, sink)),
+        Some(Syscall::Write) => {
+            if request.arg2 != 0 {
+                SyscallDispatch::returned(Err(SyscallError::InvalidArguments))
+            } else {
+                SyscallDispatch::returned(sys_write_with_memory(request.user_slice(), mapper, backend, sink))
+            }
+        }
         Some(Syscall::Exit) => match control.exit(request.arg0) {
             Ok(()) => SyscallDispatch::terminate(0),
             Err(error) => SyscallDispatch::returned(Err(error)),
@@ -168,7 +174,10 @@ where
     S: WriteSink,
 {
     match request.syscall().ok_or(SyscallError::UnknownNumber)? {
-        Syscall::Write => sys_write_with_memory(request.user_slice(), mapper, backend, sink),
+        Syscall::Write => {
+            if request.arg2 != 0 { return Err(SyscallError::InvalidArguments); }
+            sys_write_with_memory(request.user_slice(), mapper, backend, sink)
+        }
         Syscall::Exit | Syscall::Yield => Err(SyscallError::NotImplemented),
     }
 }
@@ -300,6 +309,27 @@ mod tests {
         assert_eq!(dispatch_with_memory_and_control(SyscallRequest::yield_now(), &mapper, &backend, &mut sink, &mut control), Ok(0));
         assert_eq!(control.exited, Some(42));
         assert_eq!(control.yields, 1);
+    }
+
+    #[test] fn write_rejects_nonzero_reserved_argument() {
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        let backend = FakeBackend;
+        let mut sink = Sink::default();
+        let request = SyscallRequest::new(Syscall::Write.number(), USER_SPACE_START, 4, 1);
+        assert_eq!(dispatch_with_memory(request, &mapper, &backend, &mut sink), Err(SyscallError::InvalidArguments));
+        assert!(sink.0.is_empty());
+    }
+
+    #[test] fn combined_write_rejects_nonzero_reserved_argument_before_copy() {
+        let mapper = FakeMapper { access: PageAccess::user_read_only() };
+        let backend = FakeBackend;
+        let mut sink = Sink::default();
+        let mut control = Control::default();
+        let request = SyscallRequest::new(Syscall::Write.number(), USER_SPACE_START, 4, 1);
+        let result = dispatch_with_memory_and_control_action(request, &mapper, &backend, &mut sink, &mut control);
+        assert_eq!(result.result, Err(SyscallError::InvalidArguments));
+        assert_eq!(result.action, SyscallReturnAction::Return);
+        assert!(sink.0.is_empty());
     }
 
     #[test] fn syscall_errors_encode_to_shared_abi() {
