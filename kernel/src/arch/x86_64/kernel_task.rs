@@ -16,6 +16,7 @@ pub enum KernelTaskError {
     Scheduler(SchedulerError),
     Registry(RegistryInsertError),
     Dispatch(DispatchError),
+    DispatchMismatch,
 }
 
 impl From<SchedulerError> for KernelTaskError {
@@ -92,8 +93,9 @@ impl KernelTaskManager {
 
         dispatch::validate_transition(&self.executions, previous, candidate)?;
         let decision = self.scheduler.schedule_next();
-
-        debug_assert_eq!(decision.next, Some(candidate));
+        if decision.next != Some(candidate) {
+            return Err(KernelTaskError::DispatchMismatch);
+        }
         Ok(decision)
     }
 
@@ -142,7 +144,7 @@ impl KernelTaskManager {
 
 #[cfg(test)]
 mod tests {
-    use super::KernelTaskManager;
+    use super::{KernelTaskError, KernelTaskManager};
     use crate::scheduler::{DispatchDecision, Priority, TaskState};
 
     extern "C" fn never_returns() -> ! {
@@ -175,6 +177,11 @@ mod tests {
         assert_eq!(manager.prepare_dispatch().unwrap(), DispatchDecision { previous: None, next: Some(task) });
         assert_eq!(manager.prepare_dispatch().unwrap(), DispatchDecision { previous: Some(task), next: None });
         assert_eq!(manager.scheduler.state(task), Some(TaskState::Running));
+    }
+
+    #[test]
+    fn dispatch_mismatch_is_a_runtime_error_contract() {
+        assert_eq!(KernelTaskError::DispatchMismatch, KernelTaskError::DispatchMismatch);
     }
 
     #[test]
