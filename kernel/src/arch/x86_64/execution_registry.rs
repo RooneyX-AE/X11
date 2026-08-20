@@ -60,6 +60,10 @@ impl ExecutionRegistry {
         self.entries.iter_mut().filter_map(Option::as_deref_mut).find(|binding| binding.task_id() == task_id)
     }
 
+    pub fn kernel_stack_top(&self, task_id: TaskId) -> Option<u64> {
+        self.get(task_id)?.stack_top()
+    }
+
     pub unsafe fn capture_interrupted(
         &mut self,
         task_id: TaskId,
@@ -153,6 +157,7 @@ mod tests {
         assert_eq!(registry.count(), 1);
         assert!(registry.contains(handle));
         assert!(registry.is_valid(handle));
+        assert!(registry.kernel_stack_top(handle.task_id()).is_some());
     }
 
     #[test]
