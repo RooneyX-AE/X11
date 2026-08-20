@@ -54,10 +54,7 @@ pub struct InterruptedState {
 }
 
 impl InterruptedState {
-    pub unsafe fn capture(
-        registers: *const SavedRegisters,
-        frame: InterruptReturnFrame,
-    ) -> Self {
+    pub unsafe fn capture(registers: *const SavedRegisters, frame: InterruptReturnFrame) -> Self {
         let registers = unsafe { *registers };
         let return_state = unsafe { ReturnState::capture(frame) }
             .expect("interrupt frame address must be representable as u64");
@@ -76,12 +73,11 @@ impl InterruptedState {
     }
 
     pub const fn is_user_valid(self) -> bool {
-        self.is_valid()
-            && self.return_state.is_user()
-            && self.return_state.rsp().is_some()
-            && self.return_state.ss().is_some()
-            && self.return_state.cs() & 3 == 3
-            && self.return_state.ss().unwrap_or(0) & 3 == 3
+        if !self.is_valid() || !self.return_state.is_user() || self.return_state.rsp().is_none() {
+            return false;
+        }
+        let Some(ss) = self.return_state.ss() else { return false; };
+        self.return_state.cs() & 3 == 3 && ss & 3 == 3
     }
 }
 
@@ -109,9 +105,7 @@ mod tests {
     fn kernel_return_snapshot_is_valid() {
         let registers = SavedRegisters::default();
         let mut raw = [0u64; 3];
-        raw[0] = 0x1000;
-        raw[1] = 0x10;
-        raw[2] = 0x202;
+        raw[0] = 0x1000; raw[1] = 0x10; raw[2] = 0x202;
         let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
         let snapshot = unsafe { InterruptedState::capture(&registers, frame) };
         assert!(snapshot.is_valid());
@@ -124,14 +118,7 @@ mod tests {
 
     #[test]
     fn user_return_snapshot_is_valid_only_with_user_stack_pair() {
-        let state = ReturnState {
-            rip: 0x1000,
-            cs: 0x1b,
-            rflags: 0x202,
-            resume_rsp: 0x8000,
-            rsp: Some(0x8000),
-            ss: Some(0x23),
-        };
+        let state = ReturnState { rip: 0x1000, cs: 0x1b, rflags: 0x202, resume_rsp: 0x8000, rsp: Some(0x8000), ss: Some(0x23) };
         let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
         assert!(!state.is_kernel());
         assert!(interrupted.is_valid());
