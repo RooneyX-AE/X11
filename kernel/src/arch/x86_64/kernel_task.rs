@@ -17,6 +17,7 @@ pub enum KernelTaskError {
     Registry(RegistryInsertError),
     Dispatch(DispatchError),
     DispatchMismatch,
+    KernelStackUnavailable,
 }
 
 impl From<SchedulerError> for KernelTaskError {
@@ -96,6 +97,13 @@ impl KernelTaskManager {
         if decision.next != Some(candidate) {
             return Err(KernelTaskError::DispatchMismatch);
         }
+
+        let stack_top = self.executions.kernel_stack_top(candidate)
+            .ok_or(KernelTaskError::KernelStackUnavailable)?;
+        // SAFETY: dispatch is a single-CPU kernel operation; interrupts/preemption
+        // are excluded by the caller while the current task's TSS entry stack is
+        // switched to the candidate's live kernel stack.
+        unsafe { crate::arch::x86_64::gdt::set_kernel_stack_top(stack_top); }
         Ok(decision)
     }
 
@@ -168,6 +176,7 @@ mod tests {
         assert_eq!(decision.previous, None);
         assert_eq!(decision.next, Some(task));
         assert_eq!(manager.scheduler.state(task), Some(TaskState::Running));
+        assert!(manager.executions.kernel_stack_top(task).is_some());
     }
 
     #[test]
