@@ -3,6 +3,7 @@
 //! The raw interrupt stack frame is temporary. This type copies the CPU state
 //! into task-owned memory before the interrupt stack can be reclaimed.
 
+use super::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use super::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 
 #[repr(C)]
@@ -77,7 +78,8 @@ impl InterruptedState {
             return false;
         }
         let Some(ss) = self.return_state.ss() else { return false; };
-        self.return_state.cs() & 3 == 3 && ss & 3 == 3
+        self.return_state.cs() == USER_CODE_SELECTOR as u64
+            && ss == USER_DATA_SELECTOR as u64
     }
 }
 
@@ -99,6 +101,7 @@ const _: () = assert!(core::mem::align_of::<InterruptedState>() == 8);
 #[cfg(test)]
 mod tests {
     use super::{InterruptedState, ReturnState};
+    use crate::arch::x86_64::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
     use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
 
     #[test]
@@ -117,12 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn user_return_snapshot_is_valid_only_with_user_stack_pair() {
-        let state = ReturnState { rip: 0x1000, cs: 0x1b, rflags: 0x202, resume_rsp: 0x8000, rsp: Some(0x8000), ss: Some(0x23) };
-        let interrupted = InterruptedState { registers: SavedRegisters::default(), return_state: state };
-        assert!(!state.is_kernel());
-        assert!(interrupted.is_valid());
-        assert!(interrupted.is_user_valid());
-        assert!(state.kernel_iret_words().is_none());
+    fn user_return_snapshot_requires_exact_gdt_selectors() {
+        let valid_state = ReturnState { rip: 0x1000, cs: USER_CODE_SELECTOR as u64, rflags: 0x202, resume_rsp: 0x8000, rsp: Some(0x8000), ss: Some(USER_DATA_SELECTOR as u64) };
+        let valid = InterruptedState { registers: SavedRegisters::default(), return_state: valid_state };
+        assert!(valid.is_user_valid());
+
+        let wrong_cs = InterruptedState { registers: SavedRegisters::default(), return_state: ReturnState { cs: USER_CODE_SELECTOR as u64 + 0x08, ..valid_state } };
+        assert!(!wrong_cs.is_user_valid());
+
+        let wrong_ss = InterruptedState { registers: SavedRegisters::default(), return_state: ReturnState { ss: Some(USER_DATA_SELECTOR as u64 + 0x08), ..valid_state } };
+        assert!(!wrong_ss.is_user_valid());
     }
 }
