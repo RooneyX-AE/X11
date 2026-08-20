@@ -81,9 +81,20 @@ impl InterruptedState {
     }
 }
 
+const _: () = assert!(core::mem::size_of::<SavedRegisters>() == 120);
+const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
 const _: () = assert!(core::mem::size_of::<ReturnState>() == 64);
+const _: () = assert!(core::mem::align_of::<ReturnState>() == 8);
+const _: () = assert!(core::mem::offset_of!(ReturnState, rip) == 0);
+const _: () = assert!(core::mem::offset_of!(ReturnState, cs) == 8);
+const _: () = assert!(core::mem::offset_of!(ReturnState, rflags) == 16);
+const _: () = assert!(core::mem::offset_of!(ReturnState, resume_rsp) == 24);
+const _: () = assert!(core::mem::offset_of!(ReturnState, rsp) == 32);
+const _: () = assert!(core::mem::offset_of!(ReturnState, ss) == 48);
 const _: () = assert!(core::mem::offset_of!(InterruptedState, registers) == 0);
 const _: () = assert!(core::mem::offset_of!(InterruptedState, return_state) == 120);
+const _: () = assert!(core::mem::size_of::<InterruptedState>() == 184);
+const _: () = assert!(core::mem::align_of::<InterruptedState>() == 8);
 
 #[cfg(test)]
 mod tests {
@@ -121,4 +132,4 @@ mod tests {
         assert!(state.kernel_iret_words().is_none());
         assert!(state.rsp().is_some() && state.ss().is_some());
     }
-}
+} 
