@@ -29,6 +29,22 @@ const SAME_CPL_FRAME_BYTES: usize = 3 * core::mem::size_of::<u64>();
 const CROSS_CPL_FRAME_BYTES: usize = 5 * core::mem::size_of::<u64>();
 const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
+// The interrupt-entry assembly pushes registers in exactly this memory order.
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rax) == 0);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rcx) == 8);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rdx) == 16);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rbx) == 24);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rbp) == 32);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rsi) == 40);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, rdi) == 48);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r8) == 56);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r9) == 64);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r10) == 72);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r11) == 80);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r12) == 88);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r13) == 96);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r14) == 104);
+const _: () = assert!(core::mem::offset_of!(SavedRegisters, r15) == 112);
 
 fn syscall_result_abi_value(result: crate::syscall::SyscallResult) -> u64 {
     match result { Ok(value) => value, Err(error) => error.abi_return_value() }
