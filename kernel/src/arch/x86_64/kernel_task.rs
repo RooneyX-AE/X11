@@ -93,13 +93,14 @@ impl KernelTaskManager {
         }
 
         dispatch::validate_transition(&self.executions, previous, candidate)?;
+        let stack_top = self.executions.kernel_stack_top(candidate)
+            .ok_or(KernelTaskError::KernelStackUnavailable)?;
+
         let decision = self.scheduler.schedule_next();
         if decision.next != Some(candidate) {
             return Err(KernelTaskError::DispatchMismatch);
         }
 
-        let stack_top = self.executions.kernel_stack_top(candidate)
-            .ok_or(KernelTaskError::KernelStackUnavailable)?;
         // SAFETY: dispatch is a single-CPU kernel operation; interrupts/preemption
         // are excluded by the caller while the current task's TSS entry stack is
         // switched to the candidate's live kernel stack.
