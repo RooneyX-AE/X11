@@ -29,7 +29,6 @@ const SAME_CPL_FRAME_BYTES: usize = 3 * core::mem::size_of::<u64>();
 const CROSS_CPL_FRAME_BYTES: usize = 5 * core::mem::size_of::<u64>();
 const _: () = assert!(GPR_BYTES == 120);
 const _: () = assert!(core::mem::align_of::<SavedRegisters>() == 8);
-// The interrupt-entry assembly pushes registers in exactly this memory order.
 const _: () = assert!(core::mem::offset_of!(SavedRegisters, rax) == 0);
 const _: () = assert!(core::mem::offset_of!(SavedRegisters, rcx) == 8);
 const _: () = assert!(core::mem::offset_of!(SavedRegisters, rdx) == 16);
@@ -127,8 +126,13 @@ extern "C" fn timer_entry_rust(registers: *mut SavedRegisters, return_frame: *mu
         if system.current_user_binding().is_some() {
             match crate::arch::x86_64::cpu_local::local().take_syscall_action() {
                 Some(crate::syscall::SyscallReturnAction::Reschedule) => {
-                    match system.commit_userspace_yield() {
+                    let snapshot = crate::arch::x86_64::cpu_local::local().interrupted()
+                        .map(|(task, state)| (task, state));
+                    match system.commit_userspace_yield_with_snapshot(snapshot.map(|(_, state)| state)) {
                         Ok(Some(transfer)) => {
+                            // The snapshot has now been copied into the current task's
+                            // task-owned resume slot. The CPU-local mailbox can be cleared
+                            // before the diverging transfer takes the successor to CPL3.
                             let _ = crate::arch::x86_64::cpu_local::local().take_interrupted();
                             unsafe { crate::arch::x86_64::user_transfer::execute_user_transfer(transfer) }
                         }
