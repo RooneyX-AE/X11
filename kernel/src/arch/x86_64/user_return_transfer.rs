@@ -7,6 +7,8 @@
 use crate::process::ProcessId;
 use crate::scheduler::TaskId;
 
+use super::address_space::AddressSpaceRoot;
+use super::interrupted_state::InterruptedState;
 use super::user_execution::UserExecutionBinding;
 use super::user_return::UserReturnFrame;
 
@@ -25,8 +27,9 @@ impl UserReturnTransfer {
     pub const fn process(self) -> ProcessId { self.process }
     pub const fn task(self) -> TaskId { self.task }
     pub const fn binding(self) -> UserExecutionBinding { self.binding }
-    pub const fn root(self) -> super::address_space::AddressSpaceRoot { self.binding.launch().root() }
+    pub const fn root(self) -> AddressSpaceRoot { self.binding.launch().root() }
     pub const fn frame(self) -> UserReturnFrame { self.binding.launch().frame() }
+    pub const fn resume(self) -> Option<InterruptedState> { self.binding.resume() }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,11 +37,20 @@ pub enum UserReturnTransferError {
     CurrentTask,
     InvalidSelectors,
     InvalidRflags,
+    InvalidResumeState,
 }
 
 impl UserReturnTransfer {
     pub fn validate(self, current_task: Option<TaskId>) -> Result<Self, UserReturnTransferError> {
         if current_task == Some(self.task) { return Err(UserReturnTransferError::CurrentTask); }
+
+        if let Some(state) = self.resume() {
+            if !state.is_user_valid() {
+                return Err(UserReturnTransferError::InvalidResumeState);
+            }
+            return Ok(self);
+        }
+
         let frame = self.frame();
         if frame.cs & 3 != 3 || frame.ss & 3 != 3 { return Err(UserReturnTransferError::InvalidSelectors); }
         if frame.rflags & 0x2 == 0 || frame.rflags & (1 << 9) == 0 { return Err(UserReturnTransferError::InvalidRflags); }
@@ -50,6 +62,8 @@ impl UserReturnTransfer {
 mod tests {
     use super::{UserReturnTransfer, UserReturnTransferError};
     use crate::arch::x86_64::address_space::AddressSpaceRoot;
+    use crate::arch::x86_64::interrupted_state::InterruptedState;
+    use crate::arch::x86_64::interrupt_entry::{InterruptReturnFrame, SavedRegisters};
     use crate::arch::x86_64::user_launch::prepare_launch;
     use crate::memory::{user_stack_range, USER_SPACE_START};
     use crate::process::{AddressSpaceId, ProcessId, UserLaunchPlan};
@@ -67,6 +81,19 @@ mod tests {
         UserReturnTransfer::new(binding)
     }
 
+    fn user_state() -> InterruptedState {
+        let registers = SavedRegisters::default();
+        let stack = user_stack_range().unwrap();
+        let mut raw = [0u64; 5];
+        raw[0] = USER_SPACE_START + 0x5000;
+        raw[1] = 0x1b;
+        raw[2] = 0x202;
+        raw[3] = stack.end();
+        raw[4] = 0x13;
+        let frame = unsafe { InterruptReturnFrame::from_raw(raw.as_mut_ptr()) };
+        unsafe { InterruptedState::capture(&registers, frame) }
+    }
+
     #[test]
     fn transfer_rejects_current_task() {
         let transfer = transfer();
@@ -74,10 +101,20 @@ mod tests {
     }
 
     #[test]
-    fn transfer_accepts_valid_successor_frame() {
+    fn transfer_accepts_valid_initial_frame() {
         let transfer = transfer();
         assert_eq!(transfer.validate(None), Ok(transfer));
         assert_ne!(transfer.frame().rip, 0);
         assert_ne!(transfer.frame().rsp, 0);
+    }
+
+    #[test]
+    fn transfer_accepts_valid_resume_snapshot() {
+        let transfer = transfer();
+        let mut binding = transfer.binding();
+        binding.install_resume(user_state()).unwrap();
+        let transfer = UserReturnTransfer::new(binding);
+        assert_eq!(transfer.validate(None), Ok(transfer));
+        assert!(transfer.resume().is_some());
     }
 }
