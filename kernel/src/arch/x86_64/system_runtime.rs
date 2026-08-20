@@ -171,6 +171,11 @@ impl SystemRuntime {
             return Err(SystemRuntimeError::TaskBindingMismatch);
         }
 
+        // Validate the architectural transfer before any destructive lifecycle
+        // mutation. A failed transfer must leave the current owner intact.
+        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(task))
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+
         self.processes.start(successor.process()).map_err(SystemRuntimeError::Process)?;
         self.processes.exit(process).map_err(SystemRuntimeError::Process)?;
         self.runtime.manager_mut().scheduler.terminate_current_to(successor.task())
@@ -180,8 +185,6 @@ impl SystemRuntime {
         self.pending_exit = None;
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
 
-        let transfer = UserReturnTransfer::new(successor.binding()).validate(None)
-            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         Ok(transfer)
     }
 
@@ -205,6 +208,11 @@ impl SystemRuntime {
             Err(error) => return Err(SystemRuntimeError::Successor(error)),
         };
 
+        // Validate the successor return before mutating process/scheduler
+        // ownership. This keeps the operation transactional across failure.
+        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task))
+            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
+
         self.processes.yield_to(current_process, successor.process())
             .map_err(SystemRuntimeError::Process)?;
         let decision = self.runtime.manager_mut().scheduler.schedule_next();
@@ -214,8 +222,6 @@ impl SystemRuntime {
 
         self.current_process = Some(successor.process());
         unsafe { crate::arch::x86_64::cpu_local::local().set_current_task(Some(successor.task())); }
-        let transfer = UserReturnTransfer::new(successor.binding()).validate(Some(current_task))
-            .map_err(|_| SystemRuntimeError::TaskBindingMismatch)?;
         Ok(Some(transfer))
     }
 
