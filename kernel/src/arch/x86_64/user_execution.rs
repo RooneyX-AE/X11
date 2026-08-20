@@ -61,9 +61,7 @@ impl UserExecutionBinding {
         Ok(())
     }
 
-    pub fn clear_resume(&mut self) -> Option<InterruptedState> {
-        self.resume.take()
-    }
+    pub fn clear_resume(&mut self) -> Option<InterruptedState> { self.resume.take() }
 }
 
 #[derive(Debug, Default)]
@@ -108,7 +106,7 @@ impl UserExecutionRegistry {
     }
 
     pub fn get_mut(&mut self, task: TaskId) -> Option<&mut UserExecutionBinding> {
-        self.entries.iter_mut().filter_map(Option::as_deref_mut).find(|binding| binding.task() == task)
+        self.entries.iter_mut().filter_map(Option::as_mut).find(|binding| binding.task() == task)
     }
 
     pub fn count(&self) -> usize { self.entries.iter().filter(|entry| entry.is_some()).count() }
